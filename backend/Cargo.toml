@@ -8,6 +8,7 @@ name = "entry"
 path = "src/main.rs"
 
 [dependencies]
+libc = "0.2"
 # HTTP client síncrono y ligero — 2.9 es compatible con Rust 1.75
 ureq = { version = "=2.9.6", features = ["json"] }
 

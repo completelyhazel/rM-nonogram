@@ -3,8 +3,11 @@ name: Build para reMarkable Paper Pro
 on:
   push:
     tags:
-      - 'v*'          # se lanza al crear un tag tipo v1.0, v1.1, etc.
+      - 'v*'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -22,7 +25,7 @@ jobs:
       - name: Instalar dependencias
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu qtbase5-dev-tools
+          sudo apt-get install -y gcc-aarch64-linux-gnu qt6-base-dev
 
       - name: Compilar backend
         working-directory: backend
@@ -30,10 +33,12 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
 
-      - name: Compilar recursos QML
+      - name: Compilar recursos QML (Qt6)
         working-directory: ui
         run: |
-          RCC=$(which rcc || find /usr/lib -name "rcc" -type f 2>/dev/null | head -1)
+          # Qt6 instala rcc como rcc o como rcc6 según la distro
+          RCC=$(which rcc6 2>/dev/null || which rcc 2>/dev/null || find /usr/lib/qt6 -name "rcc" -type f 2>/dev/null | head -1)
+          echo "Usando: $RCC ($($RCC --version 2>&1 | head -1))"
           $RCC -binary application.qrc -o ../resources.rcc
 
       - name: Empaquetar app
@@ -54,15 +59,14 @@ jobs:
           body: |
             ## Instalación
 
-            Conecta el reMarkable por WiFi, activa SSH y ejecuta este comando:
+            Conecta el reMarkable por WiFi, activa SSH y ejecuta:
 
             ```
-            curl -L https://github.com/${{ github.repository }}/releases/latest/download/nonogram-fetcher.tar.gz | tar -xz -C /home/root/xovi/exthome/appload/
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/nonogram-fetcher.tar.gz -o /tmp/nonogram.tar.gz && tar -xz -C /home/root/xovi/exthome/appload/ -f /tmp/nonogram.tar.gz
             ```
 
             Reinicia xochitl y la app aparecerá en AppLoad.
 
-      # Para workflow_dispatch sin tag, subir como artefacto igualmente
       - name: Subir artefacto (builds manuales)
         uses: actions/upload-artifact@v4
         with:
