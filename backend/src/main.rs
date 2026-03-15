@@ -3,7 +3,7 @@ mod nonogram;
 mod pdf_gen;
 
 use std::env;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use appload::AppLoadConnection;
 use nonogram::FetchRequest;
 
@@ -14,10 +14,10 @@ fn main() {
         std::process::exit(1);
     }
 
-    let socket_path = args[1].clone();
+    let socket_path = &args[1];
     eprintln!("[nonogram-fetcher] conectando al socket: {}", socket_path);
 
-    let mut conn = match AppLoadConnection::connect(&socket_path) {
+    let conn = match AppLoadConnection::connect(socket_path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[nonogram-fetcher] no se pudo conectar: {}", e);
@@ -27,51 +27,52 @@ fn main() {
 
     eprintln!("[nonogram-fetcher] conectado, esperando mensajes…");
 
-    // Canal para recibir respuestas del worker thread de vuelta al loop principal
-    let (tx, rx) = mpsc::channel::<(u32, String)>();
+    // Compartir la conexión entre el thread lector y los workers HTTP
+    let conn = Arc::new(Mutex::new(conn));
 
     loop {
-        // Comprobar si hay respuestas pendientes del worker (no bloqueante)
-        while let Ok((msg_type, contents)) = rx.try_recv() {
-            let _ = conn.send_message(msg_type, &contents);
-        }
-
-        // Leer siguiente mensaje del frontend (con timeout pequeño para no bloquear)
-        match conn.try_read_message() {
-            Ok(Some(msg)) => {
-                eprintln!("[nonogram-fetcher] mensaje recibido tipo={}", msg.msg_type);
-                if msg.msg_type == 0 {
-                    let req: FetchRequest = match serde_json::from_str(&msg.contents) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            let _ = conn.send_message(2, &format!("JSON inválido: {}", e));
-                            continue;
-                        }
-                    };
-
-                    // Lanzar en thread separado para no bloquear el loop
-                    let tx2 = tx.clone();
-                    std::thread::spawn(move || {
-                        handle_fetch_request(tx2, req);
-                    });
+        // Leer mensaje bloqueante (en el thread principal)
+        let msg = {
+            let mut c = conn.lock().unwrap();
+            match c.read_message() {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("[nonogram-fetcher] error leyendo socket: {}", e);
+                    break;
                 }
             }
-            Ok(None) => {
-                // No hay mensaje todavía, esperar un poco
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => {
-                eprintln!("[nonogram-fetcher] error leyendo socket: {}", e);
-                break;
-            }
+        };
+
+        eprintln!("[nonogram-fetcher] mensaje recibido tipo={} contents={}", msg.msg_type, msg.contents);
+
+        if msg.msg_type == 0 {
+            let req: FetchRequest = match serde_json::from_str(&msg.contents) {
+                Ok(r) => r,
+                Err(e) => {
+                    let mut c = conn.lock().unwrap();
+                    let _ = c.send_message(2, &format!("JSON inválido: {}", e));
+                    continue;
+                }
+            };
+
+            // Lanzar HTTP en thread separado, conn compartido via Arc<Mutex>
+            let conn2 = Arc::clone(&conn);
+            std::thread::spawn(move || {
+                handle_fetch_request(conn2, req);
+            });
         }
     }
 }
 
-fn handle_fetch_request(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
-    let send = |t: u32, s: &str| { let _ = tx.send((t, s.to_string())); };
+fn handle_fetch_request(conn: Arc<Mutex<AppLoadConnection>>, req: FetchRequest) {
+    let send = |t: u32, s: &str| {
+        if let Ok(mut c) = conn.lock() {
+            let _ = c.send_message(t, s);
+        }
+    };
 
     send(3, "Buscando nonogramas disponibles…");
+    eprintln!("[nonogram-fetcher] iniciando búsqueda, type_bw={} size={}", req.type_bw, req.size);
 
     let ids = match nonogram::search_nonograms(&req) {
         Ok(ids) if ids.is_empty() => {
@@ -80,10 +81,13 @@ fn handle_fetch_request(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
         }
         Ok(ids) => ids,
         Err(e) => {
+            eprintln!("[nonogram-fetcher] error búsqueda: {}", e);
             send(2, &format!("Error buscando nonogramas: {}", e));
             return;
         }
     };
+
+    eprintln!("[nonogram-fetcher] encontrados {} candidatos", ids.len());
 
     let idx = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -92,20 +96,29 @@ fn handle_fetch_request(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
     let chosen_id = ids[idx];
 
     send(3, &format!("Descargando nonograma #{}…", chosen_id));
+    eprintln!("[nonogram-fetcher] descargando puzzle #{}", chosen_id);
 
     let puzzle = match nonogram::fetch_nonogram(chosen_id, req.type_bw) {
         Ok(p) => p,
         Err(e) => {
+            eprintln!("[nonogram-fetcher] error descargando: {}", e);
             send(2, &format!("Error descargando el puzzle: {}", e));
             return;
         }
     };
 
-    send(3, &format!("Generando PDF para «{}»…", puzzle.title));
+    send(3, &format!("Generando PDF «{}»…", puzzle.title));
+    eprintln!("[nonogram-fetcher] generando PDF");
 
     let output_dir = "/home/root/.local/share/remarkable/xochitl";
     match pdf_gen::generate_pdf(&puzzle, output_dir) {
-        Ok(path) => send(1, &format!("SAVED:{}", path)),
-        Err(e)   => send(2, &format!("Error generando PDF: {}", e)),
+        Ok(path) => {
+            eprintln!("[nonogram-fetcher] PDF guardado: {}", path);
+            send(1, &format!("SAVED:{}", path));
+        }
+        Err(e) => {
+            eprintln!("[nonogram-fetcher] error PDF: {}", e);
+            send(2, &format!("Error generando PDF: {}", e));
+        }
     }
 }
