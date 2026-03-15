@@ -111,7 +111,12 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramPuzzle, Box<dyn st
 // ─── HTTP ────────────────────────────────────────────────────────────────────
 
 fn fetch_html(url: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let response = ureq::get(url)
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout_read(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+    let response = agent.get(url)
         .set("User-Agent", "Mozilla/5.0 (compatible; NonogramFetcher/1.0)")
         .set("Accept", "text/html,application/xhtml+xml")
         .call()?;

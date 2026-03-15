@@ -123,3 +123,32 @@ impl AppLoadConnection {
         Ok(())
     }
 }
+
+impl AppLoadConnection {
+    /// Intenta leer un mensaje sin bloquear indefinidamente.
+    /// Devuelve Ok(Some(msg)) si hay mensaje, Ok(None) si no hay nada todavía.
+    pub fn try_read_message(&mut self) -> Result<Option<Message>, Box<dyn std::error::Error>> {
+        use std::io::ErrorKind;
+
+        self.stream.set_nonblocking(true)?;
+
+        let mut len_buf = [0u8; 4];
+        let result = match self.stream.read_exact(&mut len_buf) {
+            Ok(_) => {
+                self.stream.set_nonblocking(false)?;
+                let len = u32::from_le_bytes(len_buf) as usize;
+                let mut json_buf = vec![0u8; len];
+                self.stream.read_exact(&mut json_buf)?;
+                let raw: RawMessage = serde_json::from_slice(&json_buf)?;
+                Ok(Some(Message { msg_type: raw.msg_type, contents: raw.contents }))
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                self.stream.set_nonblocking(false)?;
+                Ok(None)
+            }
+            Err(e) => Err(Box::new(e) as Box<dyn std::error::Error>),
+        };
+
+        result
+    }
+}
