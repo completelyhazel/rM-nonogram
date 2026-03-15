@@ -56,7 +56,9 @@ pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::err
     let url = format!("{}{}/p/{}", base, size_path, page);
     eprintln!("[nonogram] buscando en: {}", url);
 
+    eprintln!("[nonogram] iniciando fetch HTTP...");
     let body = fetch_html(&url)?;
+    eprintln!("[nonogram] fetch HTTP completado, {} bytes", body.len());
     parse_ids(&body, req.difficulty)
 }
 
@@ -96,7 +98,9 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramPuzzle, Box<dyn st
     };
 
     eprintln!("[nonogram] descargando: {}", url);
+    eprintln!("[nonogram] iniciando fetch HTTP...");
     let body = fetch_html(&url)?;
+    eprintln!("[nonogram] fetch HTTP completado, {} bytes", body.len());
     parse_puzzle(&body, id, is_bw)
 }
 
@@ -144,9 +148,9 @@ fn parse_puzzle(html: &str, id: u32, is_bw: bool) -> Result<NonogramPuzzle, Box<
 
 fn fetch_html(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout_read(std::time::Duration::from_secs(20))
-        .timeout(std::time::Duration::from_secs(30))
+.timeout_connect(std::time::Duration::from_secs(8))
+.timeout_read(std::time::Duration::from_secs(15))
+.timeout(std::time::Duration::from_secs(20))
         .build();
 
     let resp = agent.get(url)
