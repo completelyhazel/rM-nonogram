@@ -3,7 +3,7 @@ name: Build para reMarkable Paper Pro
 on:
   push:
     branches: [main, master]
-  workflow_dispatch:   # permite lanzarlo manualmente desde la web de GitHub
+  workflow_dispatch:
 
 jobs:
   build:
@@ -18,8 +18,10 @@ jobs:
         with:
           targets: aarch64-unknown-linux-musl
 
-      - name: Instalar cross-compiler aarch64
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu qtbase5-dev-tools
 
       - name: Compilar backend
         working-directory: backend
@@ -27,12 +29,14 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
 
-      - name: Instalar rcc (Qt resource compiler)
-        run: sudo apt-get install -y qt6-base-dev-tools || sudo apt-get install -y qtbase5-dev-tools
-
       - name: Compilar recursos QML
         working-directory: ui
-        run: rcc -binary application.qrc -o ../resources.rcc || rcc-qt6 -binary application.qrc -o ../resources.rcc
+        run: |
+          # En ubuntu, qtbase5-dev-tools instala el binario como "rcc"
+          # pero a veces está en /usr/lib/x86_64-linux-gnu/qt5/bin/rcc
+          RCC=$(which rcc || find /usr/lib -name "rcc" -type f 2>/dev/null | head -1)
+          echo "Usando rcc: $RCC"
+          $RCC -binary application.qrc -o ../resources.rcc
 
       - name: Empaquetar app
         run: |
@@ -41,7 +45,6 @@ jobs:
           cp resources.rcc dist/nonogram-fetcher/
           cp backend/target/aarch64-unknown-linux-musl/release/entry dist/nonogram-fetcher/backend/entry
           chmod +x dist/nonogram-fetcher/backend/entry
-          # icono por defecto si no existe
           [ -f icon.png ] && cp icon.png dist/nonogram-fetcher/ || true
 
       - name: Subir artefacto
