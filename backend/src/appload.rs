@@ -1,13 +1,25 @@
-use std::io::{self, Read, Write};
+// Con SOCK_SEQPACKET cada recv() lee UN mensaje completo de una vez.
+// No se puede hacer read_exact en dos pasos (4 bytes len + payload).
+// Solución: recv() en un buffer grande, parsear los 4 bytes del inicio.
+
+use std::io::{self, Write};
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::ffi::CString;
-use libc::{socket, connect, AF_UNIX, SOCK_SEQPACKET, SOCK_STREAM, sockaddr_un, socklen_t, c_int, close};
+use libc::{
+    socket, connect, recv, AF_UNIX, SOCK_SEQPACKET, SOCK_STREAM,
+    sockaddr_un, socklen_t, c_int, close, MSG_WAITALL,
+};
 use serde::{Deserialize, Serialize};
 
 pub struct AppLoadConnection {
-    stream: UnixStream,
+    fd:     i32,
+    stream: Option<UnixStream>,  // solo usado para enviar (STREAM mode)
+    mode:   SocketMode,
 }
+
+#[derive(Clone, Copy)]
+enum SocketMode { SeqPacket, Stream }
 
 #[derive(Debug)]
 pub struct Message {
@@ -16,7 +28,7 @@ pub struct Message {
 }
 
 #[derive(Deserialize)]
-struct RawMessage {
+struct RawMsg {
     #[serde(rename = "type")]
     msg_type: u32,
     contents: String,
@@ -33,7 +45,8 @@ fn connect_unix(path: &str, sock_type: c_int) -> io::Result<i32> {
     let fd = unsafe { socket(AF_UNIX, sock_type, 0) };
     if fd < 0 { return Err(io::Error::last_os_error()); }
 
-    let c_path = CString::new(path).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let c_path = CString::new(path)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let bytes = c_path.as_bytes_with_nul();
     if bytes.len() > 108 {
         unsafe { close(fd); }
@@ -51,7 +64,9 @@ fn connect_unix(path: &str, sock_type: c_int) -> io::Result<i32> {
     }
 
     let len = (std::mem::size_of::<libc::sa_family_t>() + bytes.len()) as socklen_t;
-    let ret = unsafe { connect(fd, &addr as *const sockaddr_un as *const libc::sockaddr, len) };
+    let ret = unsafe {
+        connect(fd, &addr as *const sockaddr_un as *const libc::sockaddr, len)
+    };
 
     if ret < 0 {
         let err = io::Error::last_os_error();
@@ -64,32 +79,95 @@ fn connect_unix(path: &str, sock_type: c_int) -> io::Result<i32> {
 
 impl AppLoadConnection {
     pub fn connect(path: &str) -> io::Result<Self> {
-        let fd = match connect_unix(path, SOCK_SEQPACKET) {
-            Ok(fd) => { eprintln!("[nonogram-fetcher] conectado via SOCK_SEQPACKET"); fd }
+        match connect_unix(path, SOCK_SEQPACKET) {
+            Ok(fd) => {
+                eprintln!("[nonogram-fetcher] conectado via SOCK_SEQPACKET");
+                Ok(Self { fd, stream: None, mode: SocketMode::SeqPacket })
+            }
             Err(e) => {
                 eprintln!("[nonogram-fetcher] SEQPACKET falló ({}), intentando STREAM…", e);
-                connect_unix(path, SOCK_STREAM)?
+                let fd = connect_unix(path, SOCK_STREAM)?;
+                eprintln!("[nonogram-fetcher] conectado via SOCK_STREAM");
+                let stream = unsafe { UnixStream::from_raw_fd(fd) };
+                Ok(Self { fd: -1, stream: Some(stream), mode: SocketMode::Stream })
             }
-        };
-        Ok(Self { stream: unsafe { UnixStream::from_raw_fd(fd) } })
+        }
     }
 
     pub fn read_message(&mut self) -> Result<Message, Box<dyn std::error::Error>> {
+        match self.mode {
+            SocketMode::SeqPacket => self.read_seqpacket(),
+            SocketMode::Stream    => self.read_stream(),
+        }
+    }
+
+    fn read_seqpacket(&mut self) -> Result<Message, Box<dyn std::error::Error>> {
+        // Un solo recv() lee el mensaje completo
+        let mut buf = vec![0u8; 65536];
+        let n = unsafe {
+            recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), MSG_WAITALL)
+        };
+        if n <= 0 {
+            return Err(format!("recv devolvió {}: {}", n, io::Error::last_os_error()).into());
+        }
+        let n = n as usize;
+        eprintln!("[nonogram-fetcher] recibidos {} bytes via SEQPACKET", n);
+
+        // El mensaje puede tener 4 bytes de longitud al inicio, o ser JSON directo
+        let json_bytes = if n >= 4 {
+            let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            if len + 4 == n {
+                // Formato con prefijo de longitud
+                &buf[4..n]
+            } else {
+                // JSON directo sin prefijo
+                &buf[..n]
+            }
+        } else {
+            &buf[..n]
+        };
+
+        eprintln!("[nonogram-fetcher] JSON: {}", String::from_utf8_lossy(json_bytes));
+        let raw: RawMsg = serde_json::from_slice(json_bytes)?;
+        Ok(Message { msg_type: raw.msg_type, contents: raw.contents })
+    }
+
+    fn read_stream(&mut self) -> Result<Message, Box<dyn std::error::Error>> {
+        use std::io::Read;
+        let stream = self.stream.as_mut().unwrap();
         let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf)?;
+        stream.read_exact(&mut len_buf)?;
         let len = u32::from_le_bytes(len_buf) as usize;
         let mut buf = vec![0u8; len];
-        self.stream.read_exact(&mut buf)?;
-        let raw: RawMessage = serde_json::from_slice(&buf)?;
+        stream.read_exact(&mut buf)?;
+        eprintln!("[nonogram-fetcher] JSON (stream): {}", String::from_utf8_lossy(&buf));
+        let raw: RawMsg = serde_json::from_slice(&buf)?;
         Ok(Message { msg_type: raw.msg_type, contents: raw.contents })
     }
 
     pub fn send_message(&mut self, msg_type: u32, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
         let json  = serde_json::to_string(&RawOut { msg_type, contents })?;
         let bytes = json.as_bytes();
-        self.stream.write_all(&(bytes.len() as u32).to_le_bytes())?;
-        self.stream.write_all(bytes)?;
-        self.stream.flush()?;
+        let len   = bytes.len() as u32;
+
+        let mut packet = Vec::with_capacity(4 + bytes.len());
+        packet.extend_from_slice(&len.to_le_bytes());
+        packet.extend_from_slice(bytes);
+
+        match self.mode {
+            SocketMode::SeqPacket => {
+                let sent = unsafe {
+                    libc::send(self.fd, packet.as_ptr() as *const libc::c_void, packet.len(), 0)
+                };
+                if sent < 0 {
+                    return Err(io::Error::last_os_error().into());
+                }
+            }
+            SocketMode::Stream => {
+                self.stream.as_mut().unwrap().write_all(&packet)?;
+                self.stream.as_mut().unwrap().flush()?;
+            }
+        }
         Ok(())
     }
 }
