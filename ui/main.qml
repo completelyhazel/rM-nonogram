@@ -168,7 +168,7 @@ Item {
                     busyIndicator.visible = true
                     statusText.color      = "#555555"
                     statusText.text       = "Conectando a nonograms.org…"
-                    endpoint.sendMesssage(0, payload)
+                    endpoint.sendMessage(0, payload)
                 }
             }
         }
