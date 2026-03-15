@@ -114,22 +114,27 @@ impl AppLoadConnection {
         eprintln!("[nonogram-fetcher] recibidos {} bytes via SEQPACKET", n);
 
         // El mensaje puede tener 4 bytes de longitud al inicio, o ser JSON directo
+        // AppLoad SEQPACKET envía el contents directamente (sin wrapper).
+        // Intentar primero formato con prefijo de longitud, luego directo.
         let json_bytes = if n >= 4 {
             let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-            if len + 4 == n {
-                // Formato con prefijo de longitud
-                &buf[4..n]
-            } else {
-                // JSON directo sin prefijo
-                &buf[..n]
-            }
+            if len + 4 == n { &buf[4..n] } else { &buf[..n] }
         } else {
             &buf[..n]
         };
 
-        eprintln!("[nonogram-fetcher] JSON: {}", String::from_utf8_lossy(json_bytes));
-        let raw: RawMsg = serde_json::from_slice(json_bytes)?;
-        Ok(Message { msg_type: raw.msg_type, contents: raw.contents })
+        let text = String::from_utf8_lossy(json_bytes);
+        eprintln!("[nonogram-fetcher] JSON: {}", text);
+
+        // Intentar formato con wrapper {"type":N,"contents":"..."}
+        if let Ok(raw) = serde_json::from_slice::<RawMsg>(json_bytes) {
+            return Ok(Message { msg_type: raw.msg_type, contents: raw.contents });
+        }
+
+        // Formato directo: contents enviado sin wrapper, inferir tipo por contenido
+        let contents = text.trim().to_string();
+        let msg_type = if contents.contains("type_bw") { 0 } else { 99 };
+        Ok(Message { msg_type, contents })
     }
 
     fn read_stream(&mut self) -> Result<Message, Box<dyn std::error::Error>> {
