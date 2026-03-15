@@ -2,7 +2,8 @@ name: Build para reMarkable Paper Pro
 
 on:
   push:
-    branches: [main, master]
+    tags:
+      - 'v*'          # se lanza al crear un tag tipo v1.0, v1.1, etc.
   workflow_dispatch:
 
 jobs:
@@ -32,10 +33,7 @@ jobs:
       - name: Compilar recursos QML
         working-directory: ui
         run: |
-          # En ubuntu, qtbase5-dev-tools instala el binario como "rcc"
-          # pero a veces está en /usr/lib/x86_64-linux-gnu/qt5/bin/rcc
           RCC=$(which rcc || find /usr/lib -name "rcc" -type f 2>/dev/null | head -1)
-          echo "Usando rcc: $RCC"
           $RCC -binary application.qrc -o ../resources.rcc
 
       - name: Empaquetar app
@@ -46,10 +44,28 @@ jobs:
           cp backend/target/aarch64-unknown-linux-musl/release/entry dist/nonogram-fetcher/backend/entry
           chmod +x dist/nonogram-fetcher/backend/entry
           [ -f icon.png ] && cp icon.png dist/nonogram-fetcher/ || true
+          cd dist && tar -czf nonogram-fetcher.tar.gz nonogram-fetcher/
 
-      - name: Subir artefacto
+      - name: Publicar GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/nonogram-fetcher.tar.gz
+          body: |
+            ## Instalación
+
+            Conecta el reMarkable por WiFi, activa SSH y ejecuta este comando:
+
+            ```
+            curl -L https://github.com/${{ github.repository }}/releases/latest/download/nonogram-fetcher.tar.gz | tar -xz -C /home/root/xovi/exthome/appload/
+            ```
+
+            Reinicia xochitl y la app aparecerá en AppLoad.
+
+      # Para workflow_dispatch sin tag, subir como artefacto igualmente
+      - name: Subir artefacto (builds manuales)
         uses: actions/upload-artifact@v4
         with:
           name: nonogram-fetcher-rmpp
-          path: dist/nonogram-fetcher/
+          path: dist/nonogram-fetcher.tar.gz
           retention-days: 30
