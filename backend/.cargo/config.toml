@@ -1,0 +1,10 @@
+# Configuración de cross-compilación para aarch64-unknown-linux-musl
+# Ubica este archivo en ~/.cargo/config.toml o en nonogram-fetcher/backend/.cargo/config.toml
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-gnu-gcc"
+ar     = "aarch64-linux-gnu-ar"
+
+# Si prefieres usar la herramienta `cross` (más sencillo):
+# cargo install cross
+# cross build --release --target aarch64-unknown-linux-musl

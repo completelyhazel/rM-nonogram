@@ -1,0 +1,52 @@
+name: Build para reMarkable Paper Pro
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:   # permite lanzarlo manualmente desde la web de GitHub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: Instalar cross-compiler aarch64
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Compilar backend
+        working-directory: backend
+        run: cargo build --release --target aarch64-unknown-linux-musl
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Instalar rcc (Qt resource compiler)
+        run: sudo apt-get install -y qt6-base-dev-tools || sudo apt-get install -y qtbase5-dev-tools
+
+      - name: Compilar recursos QML
+        working-directory: ui
+        run: rcc -binary application.qrc -o ../resources.rcc || rcc-qt6 -binary application.qrc -o ../resources.rcc
+
+      - name: Empaquetar app
+        run: |
+          mkdir -p dist/nonogram-fetcher/backend
+          cp manifest.json dist/nonogram-fetcher/
+          cp resources.rcc dist/nonogram-fetcher/
+          cp backend/target/aarch64-unknown-linux-musl/release/entry dist/nonogram-fetcher/backend/entry
+          chmod +x dist/nonogram-fetcher/backend/entry
+          # icono por defecto si no existe
+          [ -f icon.png ] && cp icon.png dist/nonogram-fetcher/ || true
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: nonogram-fetcher-rmpp
+          path: dist/nonogram-fetcher/
+          retention-days: 30
