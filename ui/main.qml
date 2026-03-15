@@ -13,39 +13,33 @@ Item {
         endpoint.terminate()
     }
 
-    // ─── AppLoad backend bridge ───────────────────────────────────────────────
     AppLoad {
         id: endpoint
         applicationID: "com.nonogram.fetcher"
 
         onMessageReceived: (type, contents) => {
             if (type === 1) {
-                // Success: "SAVED:<filename>"
                 statusText.color = "#1a1a1a"
-                statusText.text  = "✓ Saved to your library:\n" + contents.replace("SAVED:", "")
+                statusText.text  = "✓ Saved to library:\n" + contents.replace("SAVED:", "")
                 busyIndicator.visible = false
                 fetchButton.enabled   = true
             } else if (type === 2) {
-                // Error message
                 statusText.color = "#cc2200"
                 statusText.text  = "✗ " + contents
                 busyIndicator.visible = false
                 fetchButton.enabled   = true
             } else if (type === 3) {
-                // Progress update
                 statusText.color = "#555555"
                 statusText.text  = contents
             }
         }
     }
 
-    // ─── Background ──────────────────────────────────────────────────────────
     Rectangle {
         anchors.fill: parent
         color: "#f5f5f0"
     }
 
-    // ─── Content ─────────────────────────────────────────────────────────────
     ColumnLayout {
         anchors {
             horizontalCenter: parent.horizontalCenter
@@ -55,7 +49,7 @@ Item {
         width: 900
         spacing: 0
 
-        // Title
+        // Título
         Text {
             Layout.alignment: Qt.AlignHCenter
             text: "Nonogram Fetcher"
@@ -64,20 +58,31 @@ Item {
             color: "#1a1a1a"
         }
 
+        Item { height: 4 }
+
         Text {
             Layout.alignment: Qt.AlignHCenter
             text: "nonograms.org"
             font.pixelSize: 28
             color: "#888888"
-            topPadding: 4
-            bottomPadding: 60
         }
 
-        // ── Separator ─────────────────────────────────────────────────────
-        Rectangle { Layout.fillWidth: true; height: 1; color: "#cccccc"; Layout.bottomMargin: 50 }
+        Item { height: 60 }
 
-        // ── Type selector ─────────────────────────────────────────────────
-        SectionLabel { text: "Type" }
+        Rectangle { Layout.fillWidth: true; height: 1; color: "#cccccc" }
+
+        Item { height: 50 }
+
+        // Tipo
+        Text {
+            Layout.alignment: Qt.AlignLeft
+            text: "Type"
+            font.pixelSize: 28
+            color: "#555555"
+            font.weight: Font.Medium
+        }
+
+        Item { height: 16 }
 
         OptionRow {
             id: typeSelector
@@ -87,8 +92,16 @@ Item {
 
         Item { height: 40 }
 
-        // ── Size selector ─────────────────────────────────────────────────
-        SectionLabel { text: "Grid Size" }
+        // Tamaño
+        Text {
+            Layout.alignment: Qt.AlignLeft
+            text: "Grid Size"
+            font.pixelSize: 28
+            color: "#555555"
+            font.weight: Font.Medium
+        }
+
+        Item { height: 16 }
 
         OptionRow {
             id: sizeSelector
@@ -98,21 +111,30 @@ Item {
 
         Item { height: 40 }
 
-        // ── Difficulty ────────────────────────────────────────────────────
-        SectionLabel { text: "Max Difficulty (rating)" }
+        // Dificultad
+        Text {
+            Layout.alignment: Qt.AlignLeft
+            text: "Max Difficulty"
+            font.pixelSize: 28
+            color: "#555555"
+            font.weight: Font.Medium
+        }
+
+        Item { height: 16 }
 
         OptionRow {
             id: diffSelector
-            model: ["Any", "Easy (1–2★)", "Medium (3★)", "Hard (4–5★)"]
+            model: ["Any", "Easy", "Medium", "Hard"]
             selected: 0
         }
 
         Item { height: 70 }
 
-        // ── Separator ─────────────────────────────────────────────────────
-        Rectangle { Layout.fillWidth: true; height: 1; color: "#cccccc"; Layout.bottomMargin: 60 }
+        Rectangle { Layout.fillWidth: true; height: 1; color: "#cccccc" }
 
-        // ── Fetch button ──────────────────────────────────────────────────
+        Item { height: 60 }
+
+        // Botón fetch
         Rectangle {
             id: fetchButton
             Layout.alignment: Qt.AlignHCenter
@@ -136,19 +158,16 @@ Item {
                 anchors.fill: parent
                 enabled: fetchButton.enabled
                 onClicked: {
-                    // Build request JSON
                     var sizeMap = ["5", "10", "15", "20", "25"]
                     var payload = JSON.stringify({
                         type_bw:    typeSelector.selected === 0,
                         size:       sizeMap[sizeSelector.selected],
                         difficulty: diffSelector.selected
                     })
-
                     fetchButton.enabled   = false
                     busyIndicator.visible = true
                     statusText.color      = "#555555"
-                    statusText.text       = "Connecting to nonograms.org…"
-
+                    statusText.text       = "Conectando a nonograms.org…"
                     endpoint.sendMesssage(0, payload)
                 }
             }
@@ -156,7 +175,6 @@ Item {
 
         Item { height: 40 }
 
-        // ── Busy indicator ────────────────────────────────────────────────
         BusyIndicator {
             id: busyIndicator
             Layout.alignment: Qt.AlignHCenter
@@ -166,7 +184,6 @@ Item {
             running: visible
         }
 
-        // ── Status text ───────────────────────────────────────────────────
         Text {
             id: statusText
             Layout.alignment: Qt.AlignHCenter
@@ -176,33 +193,23 @@ Item {
             color: "#555555"
             wrapMode: Text.WordWrap
             horizontalAlignment: Text.AlignHCenter
-            topPadding: 10
         }
 
         Item { height: 80 }
 
-        // ── Close button ──────────────────────────────────────────────────
         Text {
             Layout.alignment: Qt.AlignHCenter
             text: "Close"
             font.pixelSize: 28
             color: "#999999"
-            bottomPadding: 40
 
             MouseArea {
                 anchors.fill: parent
                 onClicked: root.close()
             }
         }
-    }
 
-    // ─── Reusable components ──────────────────────────────────────────────────
-    component SectionLabel: Text {
-        Layout.alignment: Qt.AlignLeft
-        font.pixelSize: 28
-        color: "#555555"
-        font.weight: Font.Medium
-        bottomPadding: 16
+        Item { height: 40 }
     }
 
     component OptionRow: RowLayout {
@@ -211,7 +218,6 @@ Item {
         property int selected: 0
         Layout.fillWidth: true
         spacing: 16
-        bottomPadding: 4
 
         Repeater {
             model: optRow.model
