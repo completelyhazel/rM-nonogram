@@ -2,7 +2,7 @@
 // add a title header and a puzzle-ID footer, then write xochitl metadata.
 
 use printpdf::*;
-use image::GenericImageView;
+use ::image::{self, GenericImageView};
 use std::fs;
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -74,7 +74,7 @@ pub fn generate_pdf(
         translate_y: Some(Mm(img_y)),
         scale_x:     Some(sx),
         scale_y:     Some(sy),
-        dpi:         Some(dpi as f32),
+        dpi:         Some(dpi),
         ..Default::default()
     });
 
