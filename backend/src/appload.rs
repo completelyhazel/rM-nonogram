@@ -82,6 +82,15 @@ impl AppLoadConnection {
         match connect_unix(path, SOCK_SEQPACKET) {
             Ok(fd) => {
                 eprintln!("[nonogram-fetcher] conectado via SOCK_SEQPACKET");
+                // SO_RCVTIMEO: timeout 300ms para que el loop pueda vaciar el canal mpsc
+                let tv = libc::timeval { tv_sec: 0, tv_usec: 300_000 };
+                unsafe {
+                    libc::setsockopt(
+                        fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO,
+                        &tv as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+                    );
+                }
                 Ok(Self { fd, stream: None, mode: SocketMode::SeqPacket })
             }
             Err(e) => {
@@ -105,10 +114,15 @@ impl AppLoadConnection {
         // Un solo recv() lee el mensaje completo
         let mut buf = vec![0u8; 65536];
         let n = unsafe {
-            recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), MSG_WAITALL)
+            recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0)
         };
         if n <= 0 {
-            return Err(format!("recv devolvió {}: {}", n, io::Error::last_os_error()).into());
+            let err = io::Error::last_os_error();
+            // EAGAIN/EWOULDBLOCK = timeout expiró, no hay mensaje todavía
+            if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut {
+                return Err("timeout".into());
+            }
+            return Err(format!("recv devolvió {}: {}", n, err).into());
         }
         let n = n as usize;
         eprintln!("[nonogram-fetcher] recibidos {} bytes via SEQPACKET", n);
