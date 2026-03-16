@@ -165,25 +165,22 @@ impl AppLoadConnection {
     }
 
     pub fn send_message(&mut self, msg_type: u32, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let json  = serde_json::to_string(&RawOut { msg_type, contents })?;
-        let bytes = json.as_bytes();
-        let len   = bytes.len() as u32;
-
-        let mut packet = Vec::with_capacity(4 + bytes.len());
-        packet.extend_from_slice(&len.to_le_bytes());
-        packet.extend_from_slice(bytes);
+        // AppLoad espera solo el contents como string directo, sin wrapper ni prefijo de longitud
+        let bytes = contents.as_bytes();
 
         match self.mode {
             SocketMode::SeqPacket => {
                 let sent = unsafe {
-                    libc::send(self.fd, packet.as_ptr() as *const libc::c_void, packet.len(), 0)
+                    libc::send(self.fd, bytes.as_ptr() as *const libc::c_void, bytes.len(), 0)
                 };
                 if sent < 0 {
                     return Err(io::Error::last_os_error().into());
                 }
             }
             SocketMode::Stream => {
-                self.stream.as_mut().unwrap().write_all(&packet)?;
+                let len = bytes.len() as u32;
+                self.stream.as_mut().unwrap().write_all(&len.to_le_bytes())?;
+                self.stream.as_mut().unwrap().write_all(bytes)?;
                 self.stream.as_mut().unwrap().flush()?;
             }
         }
