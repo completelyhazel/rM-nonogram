@@ -161,66 +161,77 @@ fn fetch_html(url: &str) -> Result<String, Box<dyn std::error::Error>> {
 
 // ── JavaScript extraction ─────────────────────────────────────────────────────
 
-/// Find the first valid `var d=[[...]]` in all page scripts.
+/// Collect every `var d=[[...]]` candidate from all page scripts, then pick
+/// the best one using a simple scoring heuristic.
 ///
-/// "Valid" means: dimensions are reasonable (2–100 per axis) and all inner
-/// arrays have the same length.  If a candidate fails validation, we keep
-/// searching for the next `var d=` occurrence.
+/// Scoring (higher = better):
+///   - Both dimensions in [4, 100]:  score 2  (ideal nonogram)
+///   - Both dimensions in [2, 500]:  score 1  (extreme aspect ratio, still usable)
+///   - Otherwise:                    score 0  (rejected)
+///
+/// Among equal-score candidates we prefer the largest area (width x height),
+/// which tends to be the actual puzzle rather than a config blob.
 fn extract_grid(scripts: &[String]) -> Option<Vec<Vec<u32>>> {
+    let mut best: Option<(i32, usize, Vec<Vec<u32>>)> = None; // (score, area, grid)
+
     for script in scripts {
         let mut search_from = 0usize;
         while let Some(rel) = script[search_from..].find("var d=") {
             let abs = search_from + rel;
-            if let Some(grid) = parse_2d_array(&script[abs + 6..]) {
-                match validate_and_orient(grid) {
-                    Ok(g) => return Some(g),
-                    Err(reason) => {
-                        eprintln!("[nonogram] discarding var d= candidate: {reason}");
+            if let Some(raw) = parse_2d_array(&script[abs + 6..]) {
+                let (score, oriented) = score_and_orient(raw);
+                if score > 0 {
+                    let area = oriented.len() * oriented[0].len();
+                    eprintln!(
+                        "[nonogram] var d= candidate {}x{} score={} area={}",
+                        oriented[0].len(), oriented.len(), score, area
+                    );
+                    let better = best.as_ref().map_or(true, |&(bs, ba, _)| {
+                        score > bs || (score == bs && area > ba)
+                    });
+                    if better {
+                        best = Some((score, area, oriented));
                     }
+                } else {
+                    eprintln!("[nonogram] var d= candidate discarded (bad dimensions)");
                 }
             }
             search_from = abs + 6;
         }
     }
-    None
+
+    best.map(|(_, _, g)| g)
 }
 
-/// Accept a grid if both dimensions are in [2, 100].
-///
-/// nonograms.org sometimes stores data in column-major order (d[col][row]).
-/// If the raw parse gives height > 100 but width ≤ 100, we try transposing.
-fn validate_and_orient(
-    grid: Vec<Vec<u32>>,
-) -> Result<Vec<Vec<u32>>, String> {
+/// Score a grid candidate and optionally transpose it for a better score.
+fn score_and_orient(grid: Vec<Vec<u32>>) -> (i32, Vec<Vec<u32>>) {
     if grid.is_empty() || grid[0].is_empty() {
-        return Err("empty grid".into());
+        return (0, grid);
     }
-
     let h = grid.len();
     let w = grid[0].len();
-
-    // All rows must have the same length
     if !grid.iter().all(|r| r.len() == w) {
-        return Err("ragged grid (inconsistent row lengths)".into());
+        return (0, grid); // ragged
     }
 
-    // Dimensions are already sane — accept as-is
-    if w >= 2 && w <= 100 && h >= 2 && h <= 100 {
-        eprintln!("[nonogram] grid candidate {}×{} accepted", w, h);
-        return Ok(grid);
-    }
+    let score_dims = |w: usize, h: usize| -> i32 {
+        if w >= 4 && w <= 100 && h >= 4 && h <= 100 { 2 }
+        else if w >= 2 && w <= 500 && h >= 2 && h <= 500 { 1 }
+        else { 0 }
+    };
 
-    // Try transposing (handles column-major storage)
-    let (th, tw) = (w, h); // after transpose
-    if tw >= 2 && tw <= 100 && th >= 2 && th <= 100 {
-        eprintln!("[nonogram] transposing {}×{} → {}×{}", w, h, tw, th);
+    let raw_score        = score_dims(w, h);
+    let transposed_score = score_dims(h, w);
+
+    if raw_score >= transposed_score {
+        (raw_score, grid)
+    } else {
+        eprintln!("[nonogram] transposing {}x{} -> {}x{}", w, h, h, w);
         let transposed: Vec<Vec<u32>> = (0..w)
             .map(|col| (0..h).map(|row| grid[row][col]).collect())
             .collect();
-        return Ok(transposed);
+        (transposed_score, transposed)
     }
-
-    Err(format!("dimensions {}×{} out of range (max 100 per axis)", w, h))
 }
 
 fn extract_palette(scripts: &[String]) -> Option<Vec<String>> {

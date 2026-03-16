@@ -22,6 +22,7 @@ Item {
                 statusText.color = "#1a1a1a"
                 statusText.text  = "✓ Saved to library:\n" + contents.replace("SAVED:", "")
                 fetchButton.enabled = true
+                closeTimer.start()
             } else if (type === 2) {
                 statusText.color = "#cc2200"
                 statusText.text  = "✗ " + contents
@@ -31,6 +32,14 @@ Item {
                 statusText.text  = contents
             }
         }
+    }
+
+    // Auto-close 3 seconds after a successful save
+    Timer {
+        id: closeTimer
+        interval: 3000
+        repeat: false
+        onTriggered: root.close()
     }
 
     Rectangle {

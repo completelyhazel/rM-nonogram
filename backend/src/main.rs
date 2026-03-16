@@ -89,7 +89,7 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
         let _ = tx.send((t, s.to_string()));
     };
 
-    send(3, "Searching for nonograms…");
+    send(3, "Searching for nonograms...");
     eprintln!("[worker] search bw={} size={}", req.type_bw, req.size);
 
     let ids = match nonogram::search_nonograms(&req) {
@@ -100,20 +100,38 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
 
     eprintln!("[worker] {} puzzle IDs found", ids.len());
 
-    let idx = (std::time::SystemTime::now()
+    // Pick a random starting index, then try up to 5 different puzzles if
+    // parsing fails (some pages have unrecognisable JS structures).
+    let base = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos() as usize) % ids.len();
-    let id = ids[idx];
 
-    send(3, &format!("Downloading #{id}…"));
+    const MAX_ATTEMPTS: usize = 5;
+    let attempts = MAX_ATTEMPTS.min(ids.len());
 
-    let puzzle = match nonogram::fetch_nonogram(id, req.type_bw) {
-        Ok(p)  => p,
-        Err(e) => { send(2, &format!("Download error: {}", e)); return; }
+    let puzzle = {
+        let mut result = None;
+        for attempt in 0..attempts {
+            let id = ids[(base + attempt) % ids.len()];
+            send(3, &format!("Downloading #{}...", id));
+            match nonogram::fetch_nonogram(id, req.type_bw) {
+                Ok(p) => { result = Some(p); break; }
+                Err(e) => {
+                    eprintln!("[worker] puzzle #{} failed (attempt {}): {}", id, attempt + 1, e);
+                    if attempt + 1 < attempts {
+                        send(3, &format!("Puzzle #{} unreadable, trying another...", id));
+                    }
+                }
+            }
+        }
+        match result {
+            Some(p) => p,
+            None => { send(2, "Could not parse any puzzle from search results."); return; }
+        }
     };
 
-    send(3, &format!("Generating PDF \"{}\"...", puzzle.title));
+    send(3, &format!("Generating PDF "{}"...", puzzle.title));
 
     let dir = "/home/root/.local/share/remarkable/xochitl";
     match pdf_gen::generate_pdf(&puzzle, dir) {
