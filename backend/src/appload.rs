@@ -165,32 +165,33 @@ impl AppLoadConnection {
     }
 
     pub fn send_message(&mut self, msg_type: u32, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Formato AppLoad (Qt QDataStream, big-endian):
-        //   [4 bytes BE = longitud del payload]
-        //   [4 bytes BE = tipo]
-        //   [N bytes   = contents string]
+        // Protocolo AppLoad: DOS datagrams SEQPACKET separados por mensaje
+        //   Datagram 1 (8 bytes): [BE u32 tipo][BE u32 longitud_contents]
+        //   Datagram 2 (N bytes): [contents como UTF-8]
         let c_bytes = contents.as_bytes();
-        let payload_len = (4 + c_bytes.len()) as u32;
+        let mut header = [0u8; 8];
+        header[0..4].copy_from_slice(&msg_type.to_be_bytes());
+        header[4..8].copy_from_slice(&(c_bytes.len() as u32).to_be_bytes());
 
-        let mut packet = Vec::with_capacity(4 + 4 + c_bytes.len());
-        packet.extend_from_slice(&payload_len.to_be_bytes());   // longitud BE
-        packet.extend_from_slice(&msg_type.to_be_bytes());      // tipo BE
-        packet.extend_from_slice(c_bytes);                      // contents
-
-        eprintln!("[nonogram-fetcher] send {} bytes: len={} type={} contents={:?}",
-            packet.len(), payload_len, msg_type, contents);
+        eprintln!("[nonogram-fetcher] send type={} len={} contents={:?}",
+            msg_type, c_bytes.len(), contents);
 
         match self.mode {
             SocketMode::SeqPacket => {
-                let sent = unsafe {
-                    libc::send(self.fd, packet.as_ptr() as *const libc::c_void, packet.len(), 0)
+                // Datagram 1: header
+                let s1 = unsafe {
+                    libc::send(self.fd, header.as_ptr() as *const libc::c_void, 8, 0)
                 };
-                if sent < 0 {
-                    return Err(io::Error::last_os_error().into());
-                }
+                if s1 < 0 { return Err(io::Error::last_os_error().into()); }
+                // Datagram 2: contents
+                let s2 = unsafe {
+                    libc::send(self.fd, c_bytes.as_ptr() as *const libc::c_void, c_bytes.len(), 0)
+                };
+                if s2 < 0 { return Err(io::Error::last_os_error().into()); }
             }
             SocketMode::Stream => {
-                self.stream.as_mut().unwrap().write_all(&packet)?;
+                self.stream.as_mut().unwrap().write_all(&header)?;
+                self.stream.as_mut().unwrap().write_all(c_bytes)?;
                 self.stream.as_mut().unwrap().flush()?;
             }
         }
