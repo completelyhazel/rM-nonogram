@@ -165,22 +165,32 @@ impl AppLoadConnection {
     }
 
     pub fn send_message(&mut self, msg_type: u32, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // AppLoad espera solo el contents como string directo, sin wrapper ni prefijo de longitud
-        let bytes = contents.as_bytes();
+        // Formato AppLoad (Qt QDataStream, big-endian):
+        //   [4 bytes BE = longitud del payload]
+        //   [4 bytes BE = tipo]
+        //   [N bytes   = contents string]
+        let c_bytes = contents.as_bytes();
+        let payload_len = (4 + c_bytes.len()) as u32;
+
+        let mut packet = Vec::with_capacity(4 + 4 + c_bytes.len());
+        packet.extend_from_slice(&payload_len.to_be_bytes());   // longitud BE
+        packet.extend_from_slice(&msg_type.to_be_bytes());      // tipo BE
+        packet.extend_from_slice(c_bytes);                      // contents
+
+        eprintln!("[nonogram-fetcher] send {} bytes: len={} type={} contents={:?}",
+            packet.len(), payload_len, msg_type, contents);
 
         match self.mode {
             SocketMode::SeqPacket => {
                 let sent = unsafe {
-                    libc::send(self.fd, bytes.as_ptr() as *const libc::c_void, bytes.len(), 0)
+                    libc::send(self.fd, packet.as_ptr() as *const libc::c_void, packet.len(), 0)
                 };
                 if sent < 0 {
                     return Err(io::Error::last_os_error().into());
                 }
             }
             SocketMode::Stream => {
-                let len = bytes.len() as u32;
-                self.stream.as_mut().unwrap().write_all(&len.to_le_bytes())?;
-                self.stream.as_mut().unwrap().write_all(bytes)?;
+                self.stream.as_mut().unwrap().write_all(&packet)?;
                 self.stream.as_mut().unwrap().flush()?;
             }
         }
