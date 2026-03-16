@@ -1,19 +1,6 @@
-// AppLoad IPC — Unix socket bridge between the Rust backend and the QML frontend.
-//
-// SOCK_SEQPACKET: each send()/recv() is one complete, atomic message.
-// No need for a length prefix on the wire — the kernel preserves message
-// boundaries for us.
-//
-// Wire format (both directions):
-//   A single datagram containing UTF-8 JSON:  {"type":<u32>,"contents":"<str>"}
-//
-// Message types (backend → frontend):
-//   1  — success  ("SAVED:<path>")
-//   2  — error    (human-readable description)
-//   3  — progress (status text while working)
-//
-// Message types (frontend → backend):
-//   0  — fetch request (JSON-encoded FetchRequest as the contents string)
+// With SOCK_SEQPACKET, each recv() reads exactly ONE complete message at a time.
+// We cannot do a two-step read (4-byte length header + payload) as with a stream.
+// Solution: recv() into a large buffer and parse the 4-byte length prefix ourselves.
 
 use std::io::{self, Write};
 use std::os::unix::io::FromRawFd;
@@ -27,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub struct AppLoadConnection {
     fd:     i32,
-    stream: Option<UnixStream>, // only used in STREAM fallback mode
+    stream: Option<UnixStream>,  // only used when in STREAM mode
     mode:   SocketMode,
 }
 
@@ -40,23 +27,19 @@ pub struct Message {
     pub contents: String,
 }
 
-// ── Wire types ────────────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
-struct IncomingMsg {
+struct RawMsg {
     #[serde(rename = "type")]
     msg_type: u32,
     contents: String,
 }
 
 #[derive(Serialize)]
-struct OutgoingMsg<'a> {
+struct RawOut<'a> {
     #[serde(rename = "type")]
     msg_type: u32,
     contents: &'a str,
 }
-
-// ── Socket helpers ────────────────────────────────────────────────────────────
 
 fn connect_unix(path: &str, sock_type: c_int) -> io::Result<i32> {
     let fd = unsafe { socket(AF_UNIX, sock_type, 0) };
@@ -67,7 +50,7 @@ fn connect_unix(path: &str, sock_type: c_int) -> io::Result<i32> {
     let bytes = c_path.as_bytes_with_nul();
     if bytes.len() > 108 {
         unsafe { close(fd); }
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "socket path too long"));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path too long"));
     }
 
     let mut addr: sockaddr_un = unsafe { std::mem::zeroed() };
@@ -80,9 +63,9 @@ fn connect_unix(path: &str, sock_type: c_int) -> io::Result<i32> {
         );
     }
 
-    let addr_len = (std::mem::size_of::<libc::sa_family_t>() + bytes.len()) as socklen_t;
+    let len = (std::mem::size_of::<libc::sa_family_t>() + bytes.len()) as socklen_t;
     let ret = unsafe {
-        connect(fd, &addr as *const sockaddr_un as *const libc::sockaddr, addr_len)
+        connect(fd, &addr as *const sockaddr_un as *const libc::sockaddr, len)
     };
 
     if ret < 0 {
@@ -94,14 +77,13 @@ fn connect_unix(path: &str, sock_type: c_int) -> io::Result<i32> {
     }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
 impl AppLoadConnection {
     pub fn connect(path: &str) -> io::Result<Self> {
         match connect_unix(path, SOCK_SEQPACKET) {
             Ok(fd) => {
-                eprintln!("[appload] connected via SOCK_SEQPACKET");
-                // 300 ms recv timeout so the main loop can drain the mpsc channel
+                eprintln!("[nonogram-fetcher] connected via SOCK_SEQPACKET");
+                // SO_RCVTIMEO: 300 ms receive timeout so the main loop can poll
+                // the worker mpsc channel between reads.
                 let tv = libc::timeval { tv_sec: 0, tv_usec: 300_000 };
                 unsafe {
                     libc::setsockopt(
@@ -113,16 +95,15 @@ impl AppLoadConnection {
                 Ok(Self { fd, stream: None, mode: SocketMode::SeqPacket })
             }
             Err(e) => {
-                eprintln!("[appload] SEQPACKET failed ({}), falling back to STREAM…", e);
+                eprintln!("[nonogram-fetcher] SEQPACKET failed ({}), trying STREAM…", e);
                 let fd = connect_unix(path, SOCK_STREAM)?;
-                eprintln!("[appload] connected via SOCK_STREAM");
+                eprintln!("[nonogram-fetcher] connected via SOCK_STREAM");
                 let stream = unsafe { UnixStream::from_raw_fd(fd) };
                 Ok(Self { fd: -1, stream: Some(stream), mode: SocketMode::Stream })
             }
         }
     }
 
-    /// Block until a complete message arrives (or the recv timeout fires).
     pub fn read_message(&mut self) -> Result<Message, Box<dyn std::error::Error>> {
         match self.mode {
             SocketMode::SeqPacket => self.read_seqpacket(),
@@ -130,94 +111,42 @@ impl AppLoadConnection {
         }
     }
 
-    /// Send one message to the frontend.
-    ///
-    /// Protocol: a **single** datagram/write containing UTF-8 JSON:
-    ///   {"type":<msg_type>,"contents":"<contents>"}
-    ///
-    /// SEQPACKET guarantees the receiver gets exactly this many bytes in one
-    /// recv() call, so no length prefix is needed.
-    pub fn send_message(&mut self, msg_type: u32, contents: &str)
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let json = serde_json::to_string(&OutgoingMsg { msg_type, contents })?;
-        let bytes = json.as_bytes();
-
-        eprintln!("[appload] send type={} contents={:?}", msg_type, contents);
-
-        match self.mode {
-            SocketMode::SeqPacket => {
-                let sent = unsafe {
-                    libc::send(
-                        self.fd,
-                        bytes.as_ptr() as *const libc::c_void,
-                        bytes.len(),
-                        0,
-                    )
-                };
-                if sent < 0 {
-                    return Err(io::Error::last_os_error().into());
-                }
-            }
-            SocketMode::Stream => {
-                // STREAM needs an explicit length prefix so the reader knows
-                // where the message ends.
-                let len = bytes.len() as u32;
-                let stream = self.stream.as_mut().unwrap();
-                stream.write_all(&len.to_le_bytes())?;
-                stream.write_all(bytes)?;
-                stream.flush()?;
-            }
-        }
-        Ok(())
-    }
-}
-
-// ── Private read helpers ──────────────────────────────────────────────────────
-
-impl AppLoadConnection {
     fn read_seqpacket(&mut self) -> Result<Message, Box<dyn std::error::Error>> {
-        let mut buf = vec![0u8; 65_536];
+        // A single recv() delivers the entire datagram
+        let mut buf = vec![0u8; 65536];
         let n = unsafe {
             recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0)
         };
-
         if n <= 0 {
             let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::WouldBlock
-                || err.kind() == io::ErrorKind::TimedOut
-            {
+            // EAGAIN / EWOULDBLOCK means the receive timeout expired — no message yet
+            if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut {
                 return Err("timeout".into());
             }
             return Err(format!("recv returned {}: {}", n, err).into());
         }
-
         let n = n as usize;
-        eprintln!("[appload] received {} bytes", n);
+        eprintln!("[nonogram-fetcher] received {} bytes via SEQPACKET", n);
 
-        // AppLoad may send the payload with or without a 4-byte LE length
-        // prefix. Try both so we stay compatible with different AppLoad builds.
-        let payload = if n >= 4 {
-            let declared_len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-            if declared_len + 4 == n {
-                &buf[4..n] // length-prefixed
-            } else {
-                &buf[..n]  // raw JSON
-            }
+        // The payload may start with a 4-byte LE length prefix, or be raw JSON.
+        // Try the length-prefixed format first, then fall back to raw JSON.
+        let json_bytes = if n >= 4 {
+            let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            if len + 4 == n { &buf[4..n] } else { &buf[..n] }
         } else {
             &buf[..n]
         };
 
-        eprintln!("[appload] payload: {}", String::from_utf8_lossy(payload));
+        let text = String::from_utf8_lossy(json_bytes);
+        eprintln!("[nonogram-fetcher] JSON: {}", text);
 
-        // Try the standard wrapped format first.
-        if let Ok(msg) = serde_json::from_slice::<IncomingMsg>(payload) {
-            return Ok(Message { msg_type: msg.msg_type, contents: msg.contents });
+        // Try wrapped format: {"type":N,"contents":"..."}
+        if let Ok(raw) = serde_json::from_slice::<RawMsg>(json_bytes) {
+            return Ok(Message { msg_type: raw.msg_type, contents: raw.contents });
         }
 
-        // Fall back: AppLoad sent the contents string directly (no wrapper).
-        // Infer type from content.
-        let contents = String::from_utf8_lossy(payload).trim().to_string();
+        // Bare format: contents sent without a wrapper; infer the type from content
+        let contents = text.trim().to_string();
         let msg_type = if contents.contains("type_bw") { 0 } else { 99 };
         Ok(Message { msg_type, contents })
     }
@@ -225,18 +154,49 @@ impl AppLoadConnection {
     fn read_stream(&mut self) -> Result<Message, Box<dyn std::error::Error>> {
         use std::io::Read;
         let stream = self.stream.as_mut().unwrap();
-
         let mut len_buf = [0u8; 4];
         stream.read_exact(&mut len_buf)?;
         let len = u32::from_le_bytes(len_buf) as usize;
-
         let mut buf = vec![0u8; len];
         stream.read_exact(&mut buf)?;
+        eprintln!("[nonogram-fetcher] JSON (stream): {}", String::from_utf8_lossy(&buf));
+        let raw: RawMsg = serde_json::from_slice(&buf)?;
+        Ok(Message { msg_type: raw.msg_type, contents: raw.contents })
+    }
 
-        eprintln!("[appload] received {} bytes (stream)", len);
-        eprintln!("[appload] payload: {}", String::from_utf8_lossy(&buf));
+    pub fn send_message(&mut self, msg_type: u32, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // AppLoad SEQPACKET wire protocol: two separate datagrams per logical message.
+        //   Datagram 1 (8 bytes): [LE u32 contents_length][LE u32 type]
+        //   Datagram 2 (N bytes): [contents as UTF-8]
+        let c_bytes = contents.as_bytes();
+        let mut header = [0u8; 8];
+        header[0..4].copy_from_slice(&(c_bytes.len() as u32).to_le_bytes()); // length first
+        header[4..8].copy_from_slice(&msg_type.to_le_bytes());                // type second
 
-        let msg: IncomingMsg = serde_json::from_slice(&buf)?;
-        Ok(Message { msg_type: msg.msg_type, contents: msg.contents })
+        eprintln!(
+            "[nonogram-fetcher] send type={} len={} contents={:?}",
+            msg_type, c_bytes.len(), contents
+        );
+
+        match self.mode {
+            SocketMode::SeqPacket => {
+                // Datagram 1: header
+                let s1 = unsafe {
+                    libc::send(self.fd, header.as_ptr() as *const libc::c_void, 8, 0)
+                };
+                if s1 < 0 { return Err(io::Error::last_os_error().into()); }
+                // Datagram 2: contents
+                let s2 = unsafe {
+                    libc::send(self.fd, c_bytes.as_ptr() as *const libc::c_void, c_bytes.len(), 0)
+                };
+                if s2 < 0 { return Err(io::Error::last_os_error().into()); }
+            }
+            SocketMode::Stream => {
+                self.stream.as_mut().unwrap().write_all(&header)?;
+                self.stream.as_mut().unwrap().write_all(c_bytes)?;
+                self.stream.as_mut().unwrap().flush()?;
+            }
+        }
+        Ok(())
     }
 }
