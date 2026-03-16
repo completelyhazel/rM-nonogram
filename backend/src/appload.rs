@@ -16,7 +16,7 @@ use libc::{
     socket, connect, recv, AF_UNIX, SOCK_SEQPACKET, SOCK_STREAM,
     sockaddr_un, socklen_t, c_int, close,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 pub struct AppLoadConnection {
     fd:     i32,

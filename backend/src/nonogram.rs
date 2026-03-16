@@ -59,7 +59,7 @@ pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::err
     parse_ids(&body, req.difficulty)
 }
 
-fn parse_ids(html: &str, difficulty: u32) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+fn parse_ids(html: &str, _difficulty: u32) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
     let doc = Html::parse_document(html);
     let sel = Selector::parse("a[href*='/i/']").unwrap();
     let mut ids: Vec<u32> = Vec::new();
