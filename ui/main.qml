@@ -34,12 +34,14 @@ Item {
         }
     }
 
-    // Auto-close 4 seconds after a successful save
+    // Auto-close 4 seconds after a successful save.
+    // Per AppLoad docs: endpoint.terminate() kills the backend AND immediately
+    // unloads all frontends — this is the correct way to close programmatically.
     Timer {
         id: closeTimer
         interval: 4000
         repeat: false
-        onTriggered: root.close()
+        onTriggered: endpoint.terminate()
     }
 
     Rectangle {
