@@ -115,15 +115,42 @@ pub fn generate_pdf(
     );
     layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
 
-    // Guardar
-    let safe: String = puzzle.title.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
-        .take(40).collect();
-    let filename    = format!("nonogram_{}_{}.pdf", puzzle.id, safe);
-    let output_path = PathBuf::from(output_dir).join(&filename);
+    // Guardar con UUID para que xochitl lo indexe correctamente
+    let uuid = gen_uuid();
+    let output_path = PathBuf::from(output_dir).join(format!("{}.pdf", uuid));
     fs::create_dir_all(output_dir)?;
     doc.save(&mut BufWriter::new(fs::File::create(&output_path)?))?;
+
+    // .metadata — xochitl lo requiere para mostrar el documento
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let visible_name = puzzle.title.replace('"', "\"");
+    let metadata = format!(
+        "{{"deleted":false,"lastModified":"{ts}","lastOpened":"","lastOpenedPage":0,         "metadatamodified":false,"modified":false,"parent":"","pinned":false,         "synced":false,"type":"DocumentType","version":1,"visibleName":"{visible_name}"}}"
+    );
+    fs::write(PathBuf::from(output_dir).join(format!("{}.metadata", uuid)), &metadata)?;
+
+    // .content — xochitl requiere este archivo
+    let content_json = r#"{"dummyDocument":false,"extraMetadata":{},"fileType":"pdf","fontName":"","lastOpenedPage":0,"legacyEpub":false,"lineHeight":-1,"margins":180,"pageCount":1,"pages":[],"redirectionPageMap":[],"sizeInBytes":"0","tags":[],"textAlignment":"left","textScale":1,"transform":{}}"#;
+    fs::write(PathBuf::from(output_dir).join(format!("{}.content", uuid)), content_json)?;
+
     Ok(output_path.to_string_lossy().to_string())
+}
+
+fn gen_uuid() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // UUID v4-like generado desde tiempo + pseudo-aleatorio
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        (t & 0xffffffff) as u32,
+        ((t >> 32) & 0xffff) as u16,
+        ((t >> 48) & 0x0fff) as u16,
+        (0x8000 | ((t >> 60) & 0x3fff)) as u16,
+        (t.wrapping_mul(6364136223846793005)) & 0xffffffffffff_u128
+    )
 }
 
 fn draw_grid(layer: &PdfLayerReference, ox: f64, oy: f64, w: usize, h: usize, cell: f64) {
