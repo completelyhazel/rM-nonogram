@@ -1,240 +1,139 @@
-// ============================================================================
-//  pdf_gen.rs — Genera el PDF del nonograma para el reMarkable Paper Pro
-//  Usa printpdf 0.5.x (API estable con Rust 1.75+)
-// ============================================================================
+// PDF generation: embed the nonogram print-page image into an A4 PDF,
+// add a title header and a puzzle-ID footer, then write xochitl metadata.
 
 use printpdf::*;
+use image::GenericImageView;
 use std::fs;
 use std::io::BufWriter;
 use std::path::PathBuf;
-use crate::nonogram::{NonogramPuzzle, ClueEntry};
+use crate::nonogram::NonogramInfo;
 
-const PAGE_W: f64 = 210.0;
+const PAGE_W: f64 = 210.0; // A4 mm
 const PAGE_H: f64 = 297.0;
-const MARGIN_TOP:    f64 = 18.0;
-const MARGIN_BOTTOM: f64 = 15.0;
-const MARGIN_LEFT:   f64 = 15.0;
-const MARGIN_RIGHT:  f64 = 15.0;
-const TITLE_H:   f64 = 10.0;
-const TITLE_GAP: f64 = 6.0;
+const MARGIN: f64 = 12.0;
+const HEADER_H: f64 = 14.0; // space reserved for title above image
+const FOOTER_H: f64 = 10.0; // space reserved for puzzle-ID below image
 
 pub fn generate_pdf(
-    puzzle:     &NonogramPuzzle,
+    info: &NonogramInfo,
     output_dir: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
 
-    let max_clue_cols = puzzle.col_clues.iter().map(|c| c.len()).max().unwrap_or(1);
-    let max_clue_rows = puzzle.row_clues.iter().map(|r| r.len()).max().unwrap_or(1);
+    // --- Decode PNG ---------------------------------------------------------
+    let dyn_img = image::load_from_memory(&info.image_bytes)?;
+    let (img_w_px, img_h_px) = dyn_img.dimensions();
+    eprintln!("[pdf] image {}x{} px", img_w_px, img_h_px);
 
-    let avail_w = PAGE_W - MARGIN_LEFT - MARGIN_RIGHT;
-    let avail_h = PAGE_H - MARGIN_TOP - MARGIN_BOTTOM - TITLE_H - TITLE_GAP;
+    // --- Scale image to fill available area (preserving aspect ratio) -------
+    let avail_w = PAGE_W - 2.0 * MARGIN;
+    let avail_h = PAGE_H - 2.0 * MARGIN - HEADER_H - FOOTER_H;
 
-    let total_cols = (puzzle.width  + max_clue_rows) as f64;
-    let total_rows = (puzzle.height + max_clue_cols) as f64;
+    let scale = (avail_w / img_w_px as f64).min(avail_h / img_h_px as f64);
+    let draw_w = img_w_px as f64 * scale;
+    let draw_h = img_h_px as f64 * scale;
 
-    let cell: f64 = (avail_w / total_cols).min(avail_h / total_rows).min(14.0).max(2.5);
+    // Centre horizontally; place below the header
+    let img_x = MARGIN + (avail_w - draw_w) / 2.0;
+    // In printpdf Y=0 is at the bottom of the page
+    let img_y = PAGE_H - MARGIN - HEADER_H - draw_h;
 
-    let clue_w = max_clue_rows as f64 * cell;
-    let clue_h = max_clue_cols as f64 * cell;
-    let grid_w = puzzle.width  as f64 * cell;
-
-    let block_w = clue_w + grid_w;
-    let origin_x = MARGIN_LEFT + (avail_w - block_w) / 2.0;
-
-    // En printpdf Y=0 está abajo, Y=297 arriba.
-    // col_zone_top = borde superior de la zona de pistas de columnas
-    let col_zone_top = PAGE_H - MARGIN_TOP - TITLE_H - TITLE_GAP;
-    // top_y = borde superior del grid (= col_zone_top - clue_h)
-    let top_y = col_zone_top - clue_h;
-
+    // --- Build PDF ----------------------------------------------------------
     let (doc, page1, layer1) = PdfDocument::new(
-        &puzzle.title,
+        &info.title,
         Mm(PAGE_W), Mm(PAGE_H),
         "Layer 1",
     );
-    let layer = doc.get_page(page1).get_layer(layer1);
-    let font      = doc.add_builtin_font(BuiltinFont::Helvetica)?;
-    let font_bold = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
+    let layer    = doc.get_page(page1).get_layer(layer1);
+    let font     = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
+    let font_reg = doc.add_builtin_font(BuiltinFont::Helvetica)?;
 
-    // Título
+    // Title (top-left, below top margin)
     layer.use_text(
-        &puzzle.title, 16.0,
-        Mm(MARGIN_LEFT), Mm(PAGE_H - MARGIN_TOP - 4.0),
-        &font_bold,
-    );
-    let sub = format!("{}×{}  {}  — nonograms.org",
-        puzzle.width, puzzle.height,
-        if puzzle.is_bw { "Black & White" } else { "Color" }
-    );
-    layer.use_text(&sub, 8.0, Mm(MARGIN_LEFT), Mm(PAGE_H - MARGIN_TOP - 9.5), &font);
-
-    // Pistas de columnas
-    let grid_x = origin_x + clue_w;
-    for (col_idx, clues) in puzzle.col_clues.iter().enumerate() {
-        let cx = grid_x + col_idx as f64 * cell + cell * 0.5;
-        let n  = clues.len();
-        for (i, clue) in clues.iter().enumerate() {
-            if clue.count == 0 { continue; }
-            let row_off = max_clue_cols - n + i;
-            let cy = col_zone_top - (row_off as f64 + 0.7) * cell;
-            set_fill(&layer, clue, &puzzle.palette, puzzle.is_bw);
-            layer.use_text(&clue.count.to_string(), clue_pt(cell), Mm(cx - 1.5), Mm(cy), &font);
-        }
-    }
-
-    // Pistas de filas
-    for (row_idx, clues) in puzzle.row_clues.iter().enumerate() {
-        // row_idx=0 → fila de arriba → Y más alto
-        let cy = top_y - row_idx as f64 * cell + cell * 0.5 - 1.5;
-        let n  = clues.len();
-        for (i, clue) in clues.iter().enumerate() {
-            if clue.count == 0 { continue; }
-            let col_off = max_clue_rows - n + i;
-            let cx = origin_x + col_off as f64 * cell + 0.8;
-            set_fill(&layer, clue, &puzzle.palette, puzzle.is_bw);
-            layer.use_text(&clue.count.to_string(), clue_pt(cell), Mm(cx), Mm(cy), &font);
-        }
-    }
-
-    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-
-    // Grid vacío
-    draw_grid(&layer, grid_x, top_y, puzzle.width, puzzle.height, cell);
-
-    // Números de referencia cada 5 (cuando las celdas son suficientemente grandes)
-    if cell >= 5.0 {
-        draw_grid_numbers(&layer, &font, grid_x, top_y, puzzle.width, puzzle.height, cell);
-    }
-
-    // Pie
-    layer.set_fill_color(Color::Rgb(Rgb::new(0.55, 0.55, 0.55, None)));
-    layer.use_text(
-        &format!("nonograms.org  ·  puzzle #{}", puzzle.id),
-        7.0, Mm(MARGIN_LEFT), Mm(8.0),
+        &info.title,
+        13.0,
+        Mm(MARGIN),
+        Mm(PAGE_H - MARGIN - 5.0),
         &font,
     );
-    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
 
-    // Guardar con UUID para que xochitl lo indexe correctamente
+    // Embed image
+    // printpdf uses DPI + scale to determine rendered size:
+    //   rendered_mm = (pixels / dpi) * 25.4 * scale
+    // We want rendered_mm == draw_w / draw_h, so:
+    //   scale = draw_mm / ((pixels / dpi) * 25.4)
+    // Pick DPI = 96 as a neutral reference.
+    let dpi = 96.0_f64;
+    let natural_w_mm = img_w_px as f64 / dpi * 25.4;
+    let natural_h_mm = img_h_px as f64 / dpi * 25.4;
+    let sx = draw_w / natural_w_mm;
+    let sy = draw_h / natural_h_mm;
+
+    let pdf_image = Image::try_from(dyn_img)?;
+    pdf_image.add_to_layer(layer.clone(), ImageTransform {
+        translate_x: Some(Mm(img_x)),
+        translate_y: Some(Mm(img_y)),
+        scale_x:     Some(sx),
+        scale_y:     Some(sy),
+        dpi:         Some(dpi as f32),
+        ..Default::default()
+    });
+
+    // Footer
+    layer.set_fill_color(Color::Rgb(Rgb::new(0.5, 0.5, 0.5, None)));
+    layer.use_text(
+        &format!("nonograms.org  |  puzzle #{}", info.id),
+        7.5,
+        Mm(MARGIN),
+        Mm(FOOTER_H / 2.0),
+        &font_reg,
+    );
+
+    // --- Save PDF + xochitl sidecar files -----------------------------------
     let uuid = gen_uuid();
-    let output_path = PathBuf::from(output_dir).join(format!("{}.pdf", uuid));
-    fs::create_dir_all(output_dir)?;
-    doc.save(&mut BufWriter::new(fs::File::create(&output_path)?))?;
+    let base  = PathBuf::from(output_dir);
+    fs::create_dir_all(&base)?;
 
-    // .metadata — xochitl lo requiere para mostrar el documento
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let visible_name = puzzle.title.replace('"', "\"");
+    // PDF
+    let pdf_path = base.join(format!("{}.pdf", uuid));
+    doc.save(&mut BufWriter::new(fs::File::create(&pdf_path)?))?;
+
+    // .metadata — required by xochitl to index the document
+    let ts           = now_ms();
+    let visible_name = info.title.replace('"', "\\\"");
     let metadata = format!(
         r#"{{"deleted":false,"lastModified":"{ts}","lastOpened":"","lastOpenedPage":0,"metadatamodified":false,"modified":false,"parent":"","pinned":false,"synced":false,"type":"DocumentType","version":1,"visibleName":"{visible_name}"}}"#
     );
-    fs::write(PathBuf::from(output_dir).join(format!("{}.metadata", uuid)), &metadata)?;
+    fs::write(base.join(format!("{}.metadata", uuid)), &metadata)?;
 
-    // .content — xochitl requiere este archivo
-    let content_json = r#"{"dummyDocument":false,"extraMetadata":{},"fileType":"pdf","fontName":"","lastOpenedPage":0,"legacyEpub":false,"lineHeight":-1,"margins":180,"pageCount":1,"pages":[],"redirectionPageMap":[],"sizeInBytes":"0","tags":[],"textAlignment":"left","textScale":1,"transform":{}}"#;
-    fs::write(PathBuf::from(output_dir).join(format!("{}.content", uuid)), content_json)?;
+    // .content — xochitl requires this alongside every document
+    let content = r#"{"dummyDocument":false,"extraMetadata":{},"fileType":"pdf","fontName":"","lastOpenedPage":0,"legacyEpub":false,"lineHeight":-1,"margins":180,"pageCount":1,"pages":[],"redirectionPageMap":[],"sizeInBytes":"0","tags":[],"textAlignment":"left","textScale":1,"transform":{}}"#;
+    fs::write(base.join(format!("{}.content", uuid)), content)?;
 
-    Ok(output_path.to_string_lossy().to_string())
+    eprintln!("[pdf] saved {}.pdf", uuid);
+    Ok(pdf_path.to_string_lossy().to_string())
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+/// Generate a UUID v4-like string from the current nanosecond timestamp.
 fn gen_uuid() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // UUID v4-like generado desde tiempo + pseudo-aleatorio
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (t & 0xffffffff) as u32,
+        (t & 0xffff_ffff) as u32,
         ((t >> 32) & 0xffff) as u16,
         ((t >> 48) & 0x0fff) as u16,
         (0x8000 | ((t >> 60) & 0x3fff)) as u16,
-        (t.wrapping_mul(6364136223846793005)) & 0xffffffffffff_u128
+        t.wrapping_mul(6_364_136_223_846_793_005) & 0xffff_ffff_ffff_u128,
     )
-}
-
-fn draw_grid(layer: &PdfLayerReference, ox: f64, oy: f64, w: usize, h: usize, cell: f64) {
-    let right  = ox + w as f64 * cell;
-    let bottom = oy - h as f64 * cell;
-
-    for row in 0..=h {
-        let y     = oy - row as f64 * cell;
-        let major = row % 5 == 0;
-        layer.set_outline_color(Color::Rgb(Rgb::new(
-            if major { 0.0 } else { 0.6 },
-            if major { 0.0 } else { 0.6 },
-            if major { 0.0 } else { 0.6 },
-            None,
-        )));
-        layer.set_outline_thickness(if major { 0.45 } else { 0.12 });
-        layer.add_shape(Line {
-            points: vec![(Point::new(Mm(ox), Mm(y)), false), (Point::new(Mm(right), Mm(y)), false)],
-            is_closed: false, has_fill: false, has_stroke: true, is_clipping_path: false,
-        });
-    }
-
-    for col in 0..=w {
-        let x     = ox + col as f64 * cell;
-        let major = col % 5 == 0;
-        layer.set_outline_color(Color::Rgb(Rgb::new(
-            if major { 0.0 } else { 0.6 },
-            if major { 0.0 } else { 0.6 },
-            if major { 0.0 } else { 0.6 },
-            None,
-        )));
-        layer.set_outline_thickness(if major { 0.45 } else { 0.12 });
-        layer.add_shape(Line {
-            points: vec![(Point::new(Mm(x), Mm(oy)), false), (Point::new(Mm(x), Mm(bottom)), false)],
-            is_closed: false, has_fill: false, has_stroke: true, is_clipping_path: false,
-        });
-    }
-
-    // Borde exterior
-    layer.set_outline_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-    layer.set_outline_thickness(0.8);
-    layer.add_shape(Line {
-        points: vec![
-            (Point::new(Mm(ox),    Mm(oy)),     false),
-            (Point::new(Mm(right), Mm(oy)),     false),
-            (Point::new(Mm(right), Mm(bottom)), false),
-            (Point::new(Mm(ox),    Mm(bottom)), false),
-        ],
-        is_closed: true, has_fill: false, has_stroke: true, is_clipping_path: false,
-    });
-}
-
-fn draw_grid_numbers(layer: &PdfLayerReference, font: &IndirectFontRef, ox: f64, oy: f64, w: usize, h: usize, cell: f64) {
-    let fpt = (cell * 0.28 * 2.835).max(4.0).min(7.0);
-    layer.set_fill_color(Color::Rgb(Rgb::new(0.72, 0.72, 0.72, None)));
-    for col in (4..w).step_by(5) {
-        layer.use_text(&(col+1).to_string(), fpt, Mm(ox + col as f64 * cell + 0.5), Mm(oy + 1.0), font);
-    }
-    for row in (4..h).step_by(5) {
-        layer.use_text(&(row+1).to_string(), fpt, Mm(ox - cell * 0.95), Mm(oy - row as f64 * cell - 1.5), font);
-    }
-    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-}
-
-fn clue_pt(cell: f64) -> f64 {
-    (cell * 0.58 * 2.835).max(5.0).min(11.0)
-}
-
-fn set_fill(layer: &PdfLayerReference, clue: &ClueEntry, palette: &[String], is_bw: bool) {
-    if !is_bw && clue.color_idx > 0 {
-        if let Some(hex) = palette.get((clue.color_idx - 1) as usize) {
-            let (r, g, b) = hex_rgb(hex);
-            layer.set_fill_color(Color::Rgb(Rgb::new(r, g, b, None)));
-            return;
-        }
-    }
-    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-}
-
-fn hex_rgb(hex: &str) -> (f64, f64, f64) {
-    let h = hex.trim_start_matches('#');
-    if h.len() != 6 { return (0.0, 0.0, 0.0); }
-    let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(0) as f64 / 255.0;
-    let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(0) as f64 / 255.0;
-    let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(0) as f64 / 255.0;
-    (r, g, b)
 }

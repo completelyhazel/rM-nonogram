@@ -25,13 +25,13 @@ fn main() {
         }
     };
 
-    eprintln!("[fetcher] connected, waiting for messages…");
+    eprintln!("[fetcher] connected, waiting for messages...");
 
     // Channel for worker threads to send responses back to the main loop
     let (tx, rx) = mpsc::channel::<(u32, String)>();
 
     loop {
-        // Drain any pending worker responses (non-blocking)
+        // Drain pending worker responses (non-blocking)
         while let Ok((t, s)) = rx.try_recv() {
             eprintln!("[fetcher] forwarding type={} to frontend", t);
             let _ = conn.send_message(t, &s);
@@ -61,20 +61,18 @@ fn main() {
                         }
                     }
                 }
-                // msg_type 99 = internal / handshake messages from AppLoad — ignore
+                // msg_type 99 / 43 / 1 = internal AppLoad handshake messages — ignore
             }
             Err(e) => {
                 let s = e.to_string();
                 if s == "timeout" {
-                    // Normal: no message arrived within the recv timeout, loop again
-                    continue;
+                    continue; // normal: no message arrived within recv timeout
                 }
-                // Ignore JSON parse errors on non-message datagrams
                 if s.contains("expected value")
                     || s.contains("invalid type")
                     || s.contains("trailing")
                 {
-                    continue;
+                    continue; // JSON noise on non-message datagrams
                 }
                 eprintln!("[fetcher] socket error: {}", s);
                 break;
@@ -90,7 +88,6 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
     };
 
     send(3, "Searching for nonograms...");
-    eprintln!("[worker] search bw={} size={}", req.type_bw, req.size);
 
     let ids = match nonogram::search_nonograms(&req) {
         Ok(v) if v.is_empty() => { send(2, "No puzzles found."); return; }
@@ -100,8 +97,7 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
 
     eprintln!("[worker] {} puzzle IDs found", ids.len());
 
-    // Pick a random starting index, then try up to 5 different puzzles if
-    // parsing fails (some pages have unrecognisable JS structures).
+    // Pick a random starting index, retry up to 5 puzzles on failure
     let base = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -110,7 +106,7 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
     const MAX_ATTEMPTS: usize = 5;
     let attempts = MAX_ATTEMPTS.min(ids.len());
 
-    let puzzle = {
+    let info = {
         let mut result = None;
         for attempt in 0..attempts {
             let id = ids[(base + attempt) % ids.len()];
@@ -120,21 +116,21 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
                 Err(e) => {
                     eprintln!("[worker] puzzle #{} failed (attempt {}): {}", id, attempt + 1, e);
                     if attempt + 1 < attempts {
-                        send(3, &format!("Puzzle #{} unreadable, trying another...", id));
+                        send(3, &format!("Puzzle #{} unavailable, trying another...", id));
                     }
                 }
             }
         }
         match result {
             Some(p) => p,
-            None => { send(2, "Could not parse any puzzle from search results."); return; }
+            None => { send(2, "Could not download any puzzle."); return; }
         }
     };
 
-    send(3, &format!("Generating PDF '{}'...", puzzle.title));
+    send(3, &format!("Generating PDF for '{}'...", info.title));
 
     let dir = "/home/root/.local/share/remarkable/xochitl";
-    match pdf_gen::generate_pdf(&puzzle, dir) {
+    match pdf_gen::generate_pdf(&info, dir) {
         Ok(path) => send(1, &format!("SAVED:{}", path)),
         Err(e)   => send(2, &format!("PDF error: {}", e)),
     }

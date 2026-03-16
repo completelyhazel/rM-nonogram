@@ -20,12 +20,12 @@ Item {
         onMessageReceived: (type, contents) => {
             if (type === 1) {
                 statusText.color = "#1a1a1a"
-                statusText.text  = "✓ Saved to library:\n" + contents.replace("SAVED:", "")
+                statusText.text  = "Saved to library:\n" + contents.replace("SAVED:", "") + "\n\nClosing in 4s..."
                 fetchButton.enabled = true
                 closeTimer.start()
             } else if (type === 2) {
                 statusText.color = "#cc2200"
-                statusText.text  = "✗ " + contents
+                statusText.text  = "Error: " + contents
                 fetchButton.enabled = true
             } else if (type === 3) {
                 statusText.color = "#555555"
@@ -34,12 +34,15 @@ Item {
         }
     }
 
-    // Auto-close 3 seconds after a successful save
+    // Auto-close 4 seconds after a successful save
     Timer {
         id: closeTimer
-        interval: 3000
+        interval: 4000
         repeat: false
-        onTriggered: root.close()
+        onTriggered: {
+            endpoint.terminate()
+            root.close()
+        }
     }
 
     Rectangle {
