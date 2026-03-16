@@ -21,13 +21,11 @@ Item {
             if (type === 1) {
                 statusText.color = "#1a1a1a"
                 statusText.text  = "✓ Saved to library:\n" + contents.replace("SAVED:", "")
-                busyIndicator.visible = false
-                fetchButton.enabled   = true
+                fetchButton.enabled = true
             } else if (type === 2) {
                 statusText.color = "#cc2200"
                 statusText.text  = "✗ " + contents
-                busyIndicator.visible = false
-                fetchButton.enabled   = true
+                fetchButton.enabled = true
             } else if (type === 3) {
                 statusText.color = "#555555"
                 statusText.text  = contents
@@ -49,7 +47,7 @@ Item {
         width: 900
         spacing: 0
 
-        // Título
+        // ── Title ─────────────────────────────────────────────────────────────
         Text {
             Layout.alignment: Qt.AlignHCenter
             text: "Nonogram Fetcher"
@@ -73,7 +71,7 @@ Item {
 
         Item { height: 50 }
 
-        // Tipo
+        // ── Type ──────────────────────────────────────────────────────────────
         Text {
             Layout.alignment: Qt.AlignLeft
             text: "Type"
@@ -92,7 +90,7 @@ Item {
 
         Item { height: 40 }
 
-        // Tamaño
+        // ── Grid size ─────────────────────────────────────────────────────────
         Text {
             Layout.alignment: Qt.AlignLeft
             text: "Grid Size"
@@ -111,10 +109,10 @@ Item {
 
         Item { height: 40 }
 
-        // Dificultad
+        // ── Difficulty ────────────────────────────────────────────────────────
         Text {
             Layout.alignment: Qt.AlignLeft
-            text: "Max Difficulty"
+            text: "Difficulty"
             font.pixelSize: 28
             color: "#555555"
             font.weight: Font.Medium
@@ -134,7 +132,7 @@ Item {
 
         Item { height: 60 }
 
-        // Botón fetch
+        // ── Fetch button ──────────────────────────────────────────────────────
         Rectangle {
             id: fetchButton
             Layout.alignment: Qt.AlignHCenter
@@ -164,10 +162,9 @@ Item {
                         size:       sizeMap[sizeSelector.selected],
                         difficulty: diffSelector.selected
                     })
-                    fetchButton.enabled   = false
-                    busyIndicator.visible = true
-                    statusText.color      = "#555555"
-                    statusText.text       = "Conectando a nonograms.org…"
+                    fetchButton.enabled = false
+                    statusText.color    = "#555555"
+                    statusText.text     = "Connecting to nonograms.org…"
                     endpoint.sendMessage(0, payload)
                 }
             }
@@ -175,15 +172,7 @@ Item {
 
         Item { height: 40 }
 
-        BusyIndicator {
-            id: busyIndicator
-            Layout.alignment: Qt.AlignHCenter
-            width: 64
-            height: 64
-            visible: false
-            running: visible
-        }
-
+        // Status text — no animated spinner (eink-unfriendly)
         Text {
             id: statusText
             Layout.alignment: Qt.AlignHCenter

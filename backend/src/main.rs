@@ -3,7 +3,6 @@ mod nonogram;
 mod pdf_gen;
 
 use std::env;
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use appload::AppLoadConnection;
 use nonogram::FetchRequest;
@@ -11,59 +10,73 @@ use nonogram::FetchRequest;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("[nonogram-fetcher] ERROR: se requiere el socket path como argv[1]");
+        eprintln!("[fetcher] ERROR: socket path required as argv[1]");
         std::process::exit(1);
     }
 
     let socket_path = &args[1];
-    eprintln!("[nonogram-fetcher] conectando al socket: {}", socket_path);
+    eprintln!("[fetcher] connecting to socket: {}", socket_path);
 
     let mut conn = match AppLoadConnection::connect(socket_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[nonogram-fetcher] no se pudo conectar: {}", e);
+            eprintln!("[fetcher] connection failed: {}", e);
             std::process::exit(1);
         }
     };
 
-    eprintln!("[nonogram-fetcher] conectado, esperando mensajes…");
+    eprintln!("[fetcher] connected, waiting for messages…");
 
-    // Canal para que los workers manden respuestas al hilo principal
+    // Channel for worker threads to send responses back to the main loop
     let (tx, rx) = mpsc::channel::<(u32, String)>();
 
     loop {
-        // Enviar respuestas pendientes de workers (no bloqueante)
+        // Drain any pending worker responses (non-blocking)
         while let Ok((t, s)) = rx.try_recv() {
-            eprintln!("[nonogram-fetcher] enviando tipo={} al frontend", t);
+            eprintln!("[fetcher] forwarding type={} to frontend", t);
             let _ = conn.send_message(t, &s);
         }
 
-        // Leer mensaje del frontend (bloqueante pero con timeout interno)
+        // Wait for a message from the frontend (blocks up to SO_RCVTIMEO = 300 ms)
         match conn.read_message() {
             Ok(msg) => {
-                eprintln!("[nonogram-fetcher] mensaje tipo={}", msg.msg_type);
+                eprintln!("[fetcher] received type={}", msg.msg_type);
+
                 if msg.msg_type == 0 {
                     match serde_json::from_str::<FetchRequest>(&msg.contents) {
                         Ok(req) => {
-                            eprintln!("[nonogram-fetcher] fetch request: bw={} size={} diff={}", req.type_bw, req.size, req.difficulty);
+                            eprintln!(
+                                "[fetcher] fetch request: bw={} size={} difficulty={}",
+                                req.type_bw, req.size, req.difficulty
+                            );
                             let tx2 = tx.clone();
                             std::thread::spawn(move || handle_fetch(tx2, req));
                         }
                         Err(e) => {
-                            eprintln!("[nonogram-fetcher] error parseando request: {}", e);
-                            let _ = conn.send_message(2, &format!("Error parseando request: {}", e));
+                            eprintln!("[fetcher] failed to parse request: {}", e);
+                            let _ = conn.send_message(
+                                2,
+                                &format!("Failed to parse request: {}", e),
+                            );
                         }
                     }
                 }
+                // msg_type 99 = internal / handshake messages from AppLoad — ignore
             }
             Err(e) => {
                 let s = e.to_string();
-                if s.contains("expected value") || s.contains("invalid type")
-                    || s.contains("trailing") || s == "timeout" {
-                    // timeout o mensaje no-JSON = continuar el loop
+                if s == "timeout" {
+                    // Normal: no message arrived within the recv timeout, loop again
                     continue;
                 }
-                eprintln!("[nonogram-fetcher] error socket: {}", s);
+                // Ignore JSON parse errors on non-message datagrams
+                if s.contains("expected value")
+                    || s.contains("invalid type")
+                    || s.contains("trailing")
+                {
+                    continue;
+                }
+                eprintln!("[fetcher] socket error: {}", s);
                 break;
             }
         }
@@ -72,36 +85,39 @@ fn main() {
 
 fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
     let send = |t: u32, s: &str| {
-        eprintln!("[worker] enviando tipo={}: {}", t, s);
+        eprintln!("[worker] type={}: {}", t, s);
         let _ = tx.send((t, s.to_string()));
     };
 
-    send(3, "Buscando nonogramas…");
-    eprintln!("[worker] iniciando búsqueda bw={} size={}", req.type_bw, req.size);
+    send(3, "Searching for nonograms…");
+    eprintln!("[worker] search bw={} size={}", req.type_bw, req.size);
 
     let ids = match nonogram::search_nonograms(&req) {
-        Ok(v) if v.is_empty() => { send(2, "No se encontraron nonogramas."); return; }
-        Ok(v) => v,
-        Err(e) => { send(2, &format!("Error búsqueda: {}", e)); return; }
+        Ok(v) if v.is_empty() => { send(2, "No puzzles found."); return; }
+        Ok(v)  => v,
+        Err(e) => { send(2, &format!("Search error: {}", e)); return; }
     };
 
-    eprintln!("[worker] {} IDs encontrados", ids.len());
+    eprintln!("[worker] {} puzzle IDs found", ids.len());
+
     let idx = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos() as usize) % ids.len();
     let id = ids[idx];
 
-    send(3, &format!("Descargando #{id}…"));
+    send(3, &format!("Downloading #{id}…"));
+
     let puzzle = match nonogram::fetch_nonogram(id, req.type_bw) {
-        Ok(p) => p,
-        Err(e) => { send(2, &format!("Error descarga: {}", e)); return; }
+        Ok(p)  => p,
+        Err(e) => { send(2, &format!("Download error: {}", e)); return; }
     };
 
-    send(3, &format!("Generando PDF «{}»…", puzzle.title));
+    send(3, &format!("Generating PDF "{}"…", puzzle.title));
+
     let dir = "/home/root/.local/share/remarkable/xochitl";
     match pdf_gen::generate_pdf(&puzzle, dir) {
         Ok(path) => send(1, &format!("SAVED:{}", path)),
-        Err(e)   => send(2, &format!("Error PDF: {}", e)),
+        Err(e)   => send(2, &format!("PDF error: {}", e)),
     }
 }

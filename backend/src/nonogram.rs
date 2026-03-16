@@ -27,7 +27,7 @@ pub struct ClueEntry {
     pub color_idx: u32,
 }
 
-// ─── Búsqueda ────────────────────────────────────────────────────────────────
+// ── Search ────────────────────────────────────────────────────────────────────
 
 pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
     let base = if req.type_bw {
@@ -36,8 +36,6 @@ pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::err
         "https://www.nonograms.org/nonograms2"
     };
 
-    // Mapeo de tamaño a categoría real del sitio
-    // xsmall=~5x5, small=~10x15, medium=~15x20, large=~20x30, xlarge=~30x45
     let size_path = match req.size.as_str() {
         "5"  => "/size/xsmall",
         "10" => "/size/small",
@@ -47,18 +45,17 @@ pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::err
         _    => "",
     };
 
-    // Página aleatoria entre 1 y 8
+    // Rotate through pages 1-8 based on current time
     let page = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() % 8) + 1;
 
     let url = format!("{}{}/p/{}", base, size_path, page);
-    eprintln!("[nonogram] buscando en: {}", url);
+    eprintln!("[nonogram] searching: {}", url);
 
-    eprintln!("[nonogram] iniciando fetch HTTP...");
     let body = fetch_html(&url)?;
-    eprintln!("[nonogram] fetch HTTP completado, {} bytes", body.len());
+    eprintln!("[nonogram] search page: {} bytes", body.len());
     parse_ids(&body, req.difficulty)
 }
 
@@ -79,16 +76,16 @@ fn parse_ids(html: &str, difficulty: u32) -> Result<Vec<u32>, Box<dyn std::error
     }
 
     ids.dedup();
-    eprintln!("[nonogram] IDs encontrados: {}", ids.len());
+    eprintln!("[nonogram] found {} puzzle IDs", ids.len());
 
     if ids.is_empty() {
-        return Err("No se encontraron puzzles en la página".into());
+        return Err("No puzzles found on search page".into());
     }
 
     Ok(ids)
 }
 
-// ─── Descarga de puzzle ───────────────────────────────────────────────────────
+// ── Puzzle download ───────────────────────────────────────────────────────────
 
 pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramPuzzle, Box<dyn std::error::Error>> {
     let url = if is_bw {
@@ -97,46 +94,46 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramPuzzle, Box<dyn st
         format!("https://www.nonograms.org/nonograms2/i/{}", id)
     };
 
-    eprintln!("[nonogram] descargando: {}", url);
-    eprintln!("[nonogram] iniciando fetch HTTP...");
+    eprintln!("[nonogram] downloading: {}", url);
     let body = fetch_html(&url)?;
-    eprintln!("[nonogram] fetch HTTP completado, {} bytes", body.len());
+    eprintln!("[nonogram] puzzle page: {} bytes", body.len());
     parse_puzzle(&body, id, is_bw)
 }
 
-fn parse_puzzle(html: &str, id: u32, is_bw: bool) -> Result<NonogramPuzzle, Box<dyn std::error::Error>> {
+fn parse_puzzle(
+    html: &str,
+    id: u32,
+    is_bw: bool,
+) -> Result<NonogramPuzzle, Box<dyn std::error::Error>> {
     let doc = Html::parse_document(html);
 
-    // Título desde <h1> o <title>
-    let title = doc.select(&Selector::parse("h1").unwrap())
+    let title = doc
+        .select(&Selector::parse("h1").unwrap())
         .next()
         .map(|e| e.text().collect::<String>().trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("Nonogram #{}", id));
 
-    eprintln!("[nonogram] título: {}", title);
+    eprintln!("[nonogram] title: {}", title);
 
-    // Extraer scripts
-    let scripts: Vec<String> = doc.select(&Selector::parse("script").unwrap())
+    let scripts: Vec<String> = doc
+        .select(&Selector::parse("script").unwrap())
         .map(|e| e.text().collect::<String>())
         .collect();
 
     let grid = extract_grid(&scripts)
-        .ok_or("No se encontró var d=[[...]] en la página")?;
-
-    if grid.is_empty() || grid[0].is_empty() {
-        return Err("Grid vacío".into());
-    }
+        .ok_or("Could not find valid var d=[[...]] in page")?;
 
     let height  = grid.len();
     let width   = grid[0].len();
+
     let palette = if is_bw {
         vec!["#000000".to_string()]
     } else {
         extract_palette(&scripts).unwrap_or_else(|| vec!["#000000".to_string()])
     };
 
-    eprintln!("[nonogram] grid {}x{}, paleta {} colores", width, height, palette.len());
+    eprintln!("[nonogram] grid {}×{}, palette {} colors", width, height, palette.len());
 
     let row_clues = compute_row_clues(&grid, is_bw);
     let col_clues = compute_col_clues(&grid, width, is_bw);
@@ -144,16 +141,17 @@ fn parse_puzzle(html: &str, id: u32, is_bw: bool) -> Result<NonogramPuzzle, Box<
     Ok(NonogramPuzzle { id, title, is_bw, grid, col_clues, row_clues, palette, width, height })
 }
 
-// ─── HTTP ─────────────────────────────────────────────────────────────────────
+// ── HTTP ──────────────────────────────────────────────────────────────────────
 
 fn fetch_html(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let agent = ureq::AgentBuilder::new()
-.timeout_connect(std::time::Duration::from_secs(8))
-.timeout_read(std::time::Duration::from_secs(15))
-.timeout(std::time::Duration::from_secs(20))
+        .timeout_connect(std::time::Duration::from_secs(8))
+        .timeout_read(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(20))
         .build();
 
-    let resp = agent.get(url)
+    let resp = agent
+        .get(url)
         .set("User-Agent", "Mozilla/5.0 (compatible; NonogramFetcher/1.0)")
         .set("Accept", "text/html,application/xhtml+xml")
         .call()?;
@@ -161,17 +159,68 @@ fn fetch_html(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(resp.into_string()?)
 }
 
-// ─── Parseo JS ────────────────────────────────────────────────────────────────
+// ── JavaScript extraction ─────────────────────────────────────────────────────
 
+/// Find the first valid `var d=[[...]]` in all page scripts.
+///
+/// "Valid" means: dimensions are reasonable (2–100 per axis) and all inner
+/// arrays have the same length.  If a candidate fails validation, we keep
+/// searching for the next `var d=` occurrence.
 fn extract_grid(scripts: &[String]) -> Option<Vec<Vec<u32>>> {
-    for s in scripts {
-        if let Some(pos) = s.find("var d=") {
-            if let Some(grid) = parse_2d_array(&s[pos + 6..]) {
-                if !grid.is_empty() { return Some(grid); }
+    for script in scripts {
+        let mut search_from = 0usize;
+        while let Some(rel) = script[search_from..].find("var d=") {
+            let abs = search_from + rel;
+            if let Some(grid) = parse_2d_array(&script[abs + 6..]) {
+                match validate_and_orient(grid) {
+                    Ok(g) => return Some(g),
+                    Err(reason) => {
+                        eprintln!("[nonogram] discarding var d= candidate: {reason}");
+                    }
+                }
             }
+            search_from = abs + 6;
         }
     }
     None
+}
+
+/// Accept a grid if both dimensions are in [2, 100].
+///
+/// nonograms.org sometimes stores data in column-major order (d[col][row]).
+/// If the raw parse gives height > 100 but width ≤ 100, we try transposing.
+fn validate_and_orient(
+    grid: Vec<Vec<u32>>,
+) -> Result<Vec<Vec<u32>>, String> {
+    if grid.is_empty() || grid[0].is_empty() {
+        return Err("empty grid".into());
+    }
+
+    let h = grid.len();
+    let w = grid[0].len();
+
+    // All rows must have the same length
+    if !grid.iter().all(|r| r.len() == w) {
+        return Err("ragged grid (inconsistent row lengths)".into());
+    }
+
+    // Dimensions are already sane — accept as-is
+    if w >= 2 && w <= 100 && h >= 2 && h <= 100 {
+        eprintln!("[nonogram] grid candidate {}×{} accepted", w, h);
+        return Ok(grid);
+    }
+
+    // Try transposing (handles column-major storage)
+    let (th, tw) = (w, h); // after transpose
+    if tw >= 2 && tw <= 100 && th >= 2 && th <= 100 {
+        eprintln!("[nonogram] transposing {}×{} → {}×{}", w, h, tw, th);
+        let transposed: Vec<Vec<u32>> = (0..w)
+            .map(|col| (0..h).map(|row| grid[row][col]).collect())
+            .collect();
+        return Ok(transposed);
+    }
+
+    Err(format!("dimensions {}×{} out of range (max 100 per axis)", w, h))
 }
 
 fn extract_palette(scripts: &[String]) -> Option<Vec<String>> {
@@ -180,7 +229,8 @@ fn extract_palette(scripts: &[String]) -> Option<Vec<String>> {
             let after = &s[pos..];
             if let (Some(a), Some(b)) = (after.find('['), after.find(']')) {
                 let arr = &after[a..=b];
-                let colors: Vec<String> = arr.split('"')
+                let colors: Vec<String> = arr
+                    .split('"')
                     .filter(|s| s.starts_with('#') && s.len() == 7)
                     .map(|s| s.to_string())
                     .collect();
@@ -191,24 +241,30 @@ fn extract_palette(scripts: &[String]) -> Option<Vec<String>> {
     None
 }
 
+// ── 2-D array parser ──────────────────────────────────────────────────────────
+
 fn parse_2d_array(input: &str) -> Option<Vec<Vec<u32>>> {
     let input = input.trim();
     if !input.starts_with('[') { return None; }
 
+    // Find matching outer ']'
     let mut depth = 0i32;
-    let mut end   = 0;
+    let mut end   = 0usize;
     for (i, ch) in input.char_indices() {
         match ch {
             '[' => depth += 1,
-            ']' => { depth -= 1; if depth == 0 { end = i; break; } }
-            _   => {}
+            ']' => {
+                depth -= 1;
+                if depth == 0 { end = i; break; }
+            }
+            _ => {}
         }
     }
 
     let mut rows: Vec<Vec<u32>> = Vec::new();
-    let mut row: Vec<u32>       = Vec::new();
-    let mut num                 = String::new();
-    let mut in_row              = false;
+    let mut row:  Vec<u32>      = Vec::new();
+    let mut num   = String::new();
+    let mut in_row = false;
 
     for ch in input[1..end].chars() {
         match ch {
@@ -237,7 +293,7 @@ fn parse_2d_array(input: &str) -> Option<Vec<Vec<u32>>> {
     if rows.is_empty() { None } else { Some(rows) }
 }
 
-// ─── Pistas ───────────────────────────────────────────────────────────────────
+// ── Clue computation ──────────────────────────────────────────────────────────
 
 pub fn compute_row_clues(grid: &[Vec<u32>], is_bw: bool) -> Vec<Vec<ClueEntry>> {
     grid.iter().map(|row| line_clues(row, is_bw)).collect()
@@ -257,17 +313,28 @@ fn line_clues(line: &[u32], is_bw: bool) -> Vec<ClueEntry> {
 
     for &cell in line {
         if cell == 0 {
-            if run > 0 { clues.push(ClueEntry { count: run, color_idx: col }); run = 0; }
+            if run > 0 {
+                clues.push(ClueEntry { count: run, color_idx: col });
+                run = 0;
+            }
         } else if is_bw {
-            run += 1; col = 1;
+            run += 1;
+            col  = 1;
         } else if cell == col {
             run += 1;
         } else {
-            if run > 0 { clues.push(ClueEntry { count: run, color_idx: col }); }
-            run = 1; col = cell;
+            if run > 0 {
+                clues.push(ClueEntry { count: run, color_idx: col });
+            }
+            run = 1;
+            col = cell;
         }
     }
-    if run > 0 { clues.push(ClueEntry { count: run, color_idx: col }); }
-    if clues.is_empty() { clues.push(ClueEntry { count: 0, color_idx: 0 }); }
+    if run > 0 {
+        clues.push(ClueEntry { count: run, color_idx: col });
+    }
+    if clues.is_empty() {
+        clues.push(ClueEntry { count: 0, color_idx: 0 });
+    }
     clues
 }
