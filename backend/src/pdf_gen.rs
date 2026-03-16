@@ -1,5 +1,6 @@
 // PDF generation: embed the nonogram print-page image into an A4 PDF,
-// add a title header and a puzzle-ID footer, then write xochitl metadata.
+// add a title header and puzzle-ID footer, write xochitl sidecar files,
+// generate a thumbnail, and signal xochitl to rescan its library.
 
 use printpdf::*;
 use ::image::codecs::png::PngDecoder;
@@ -8,20 +9,18 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 use crate::nonogram::NonogramInfo;
 
-const PAGE_W: f64 = 210.0; // A4 mm
-const PAGE_H: f64 = 297.0;
-const MARGIN: f64 = 12.0;
-const HEADER_H: f64 = 14.0; // space reserved for title above image
-const FOOTER_H: f64 = 10.0; // space reserved for puzzle-ID below image
+const PAGE_W:    f64 = 210.0; // A4 mm
+const PAGE_H:    f64 = 297.0;
+const MARGIN:    f64 = 12.0;
+const HEADER_H:  f64 = 14.0;  // space above image for title
+const FOOTER_H:  f64 = 10.0;  // space below image for puzzle-ID
 
 pub fn generate_pdf(
-    info: &NonogramInfo,
+    info:       &NonogramInfo,
     output_dir: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
 
-    // --- Decode PNG ---------------------------------------------------------
-    // printpdf::Image::try_from requires an ImageDecoder, not a DynamicImage.
-    // We use PngDecoder directly and also peek at the dimensions beforehand.
+    // ── Decode image dimensions ───────────────────────────────────────────────
     let (img_w_px, img_h_px) = {
         use ::image::ImageDecoder;
         let dec = PngDecoder::new(std::io::Cursor::new(&info.image_bytes))?;
@@ -29,7 +28,7 @@ pub fn generate_pdf(
     };
     eprintln!("[pdf] image {}x{} px", img_w_px, img_h_px);
 
-    // --- Scale image to fill available area (preserving aspect ratio) -------
+    // ── Scale image to fill available area (preserve aspect ratio) ────────────
     let avail_w = PAGE_W - 2.0 * MARGIN;
     let avail_h = PAGE_H - 2.0 * MARGIN - HEADER_H - FOOTER_H;
 
@@ -37,12 +36,11 @@ pub fn generate_pdf(
     let draw_w = img_w_px as f64 * scale;
     let draw_h = img_h_px as f64 * scale;
 
-    // Centre horizontally; place below the header
     let img_x = MARGIN + (avail_w - draw_w) / 2.0;
-    // In printpdf Y=0 is at the bottom of the page
+    // printpdf: Y=0 is bottom of page
     let img_y = PAGE_H - MARGIN - HEADER_H - draw_h;
 
-    // --- Build PDF ----------------------------------------------------------
+    // ── Build PDF ─────────────────────────────────────────────────────────────
     let (doc, page1, layer1) = PdfDocument::new(
         &info.title,
         Mm(PAGE_W), Mm(PAGE_H),
@@ -52,7 +50,7 @@ pub fn generate_pdf(
     let font     = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
     let font_reg = doc.add_builtin_font(BuiltinFont::Helvetica)?;
 
-    // Title (top-left, below top margin)
+    // Title
     layer.use_text(
         &info.title,
         13.0,
@@ -61,19 +59,16 @@ pub fn generate_pdf(
         &font,
     );
 
-    // Embed image
-    // printpdf uses DPI + scale to determine rendered size:
-    //   rendered_mm = (pixels / dpi) * 25.4 * scale
-    // We want rendered_mm == draw_w / draw_h, so:
-    //   scale = draw_mm / ((pixels / dpi) * 25.4)
-    // Pick DPI = 96 as a neutral reference.
-    let dpi = 96.0_f64;
+    // Image — use reference DPI of 96; compute scale so rendered size == draw_w/h
+    let dpi          = 96.0_f64;
     let natural_w_mm = img_w_px as f64 / dpi * 25.4;
     let natural_h_mm = img_h_px as f64 / dpi * 25.4;
     let sx = draw_w / natural_w_mm;
     let sy = draw_h / natural_h_mm;
 
-    let pdf_image = Image::try_from(PngDecoder::new(std::io::Cursor::new(&info.image_bytes))?)?;
+    let pdf_image = Image::try_from(
+        PngDecoder::new(std::io::Cursor::new(&info.image_bytes))?
+    )?;
     pdf_image.add_to_layer(layer.clone(), ImageTransform {
         translate_x: Some(Mm(img_x)),
         translate_y: Some(Mm(img_y)),
@@ -93,7 +88,7 @@ pub fn generate_pdf(
         &font_reg,
     );
 
-    // --- Save PDF + xochitl sidecar files -----------------------------------
+    // ── Write files ───────────────────────────────────────────────────────────
     let uuid = gen_uuid();
     let base  = PathBuf::from(output_dir);
     fs::create_dir_all(&base)?;
@@ -102,7 +97,7 @@ pub fn generate_pdf(
     let pdf_path = base.join(format!("{}.pdf", uuid));
     doc.save(&mut BufWriter::new(fs::File::create(&pdf_path)?))?;
 
-    // .metadata — required by xochitl to index the document
+    // .metadata
     let ts           = now_ms();
     let visible_name = info.title.replace('"', "\\\"");
     let metadata = format!(
@@ -110,11 +105,25 @@ pub fn generate_pdf(
     );
     fs::write(base.join(format!("{}.metadata", uuid)), &metadata)?;
 
-    // .content — xochitl requires this alongside every document
+    // .content
     let content = r#"{"dummyDocument":false,"extraMetadata":{},"fileType":"pdf","fontName":"","lastOpenedPage":0,"legacyEpub":false,"lineHeight":-1,"margins":180,"pageCount":1,"pages":[],"redirectionPageMap":[],"sizeInBytes":"0","tags":[],"textAlignment":"left","textScale":1,"transform":{}}"#;
     fs::write(base.join(format!("{}.content", uuid)), content)?;
 
+    // .thumbnails/0.png  — xochitl requires this to show the document in the library
+    let thumb_dir = base.join(format!("{}.thumbnails", uuid));
+    fs::create_dir_all(&thumb_dir)?;
+    // Reuse the original image as thumbnail — already ~300px wide, which is fine
+    fs::write(thumb_dir.join("0.png"), &info.image_bytes)?;
+
     eprintln!("[pdf] saved {}.pdf", uuid);
+
+    // ── Signal xochitl to rescan its document library ─────────────────────────
+    // SIGHUP causes xochitl to reload without a full restart.
+    let _ = std::process::Command::new("sh")
+        .args(["-c", "kill -HUP $(pidof xochitl) 2>/dev/null || true"])
+        .spawn();
+    eprintln!("[pdf] sent SIGHUP to xochitl");
+
     Ok(pdf_path.to_string_lossy().to_string())
 }
 
@@ -127,7 +136,6 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
-/// Generate a UUID v4-like string from the current nanosecond timestamp.
 fn gen_uuid() -> String {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
