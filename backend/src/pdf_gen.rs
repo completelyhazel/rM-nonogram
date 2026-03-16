@@ -128,7 +128,7 @@ pub fn generate_pdf(
         .as_millis();
     let visible_name = puzzle.title.replace('"', "\"");
     let metadata = format!(
-        "{{"deleted":false,"lastModified":"{ts}","lastOpened":"","lastOpenedPage":0,         "metadatamodified":false,"modified":false,"parent":"","pinned":false,         "synced":false,"type":"DocumentType","version":1,"visibleName":"{visible_name}"}}"
+        r#"{{"deleted":false,"lastModified":"{ts}","lastOpened":"","lastOpenedPage":0,"metadatamodified":false,"modified":false,"parent":"","pinned":false,"synced":false,"type":"DocumentType","version":1,"visibleName":"{visible_name}"}}"#
     );
     fs::write(PathBuf::from(output_dir).join(format!("{}.metadata", uuid)), &metadata)?;
 
