@@ -95,7 +95,7 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std:
         .next()
         .and_then(|el| el.value().attr("src"))
         .ok_or("Could not find puzzle image on print page")?
-        .replace("_11_1_", "_19_4_")
+        .replace("_12_1_", "_19_4_")
         .to_string();
 
     eprintln!("[nonogram] image url: {}", img_url);

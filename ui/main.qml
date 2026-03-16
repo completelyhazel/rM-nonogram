@@ -18,16 +18,16 @@ Item {
         applicationID: "com.nonogram.fetcher"
 
         onMessageReceived: (type, contents) => {
-            if (type === 1) {
+            if (type == 1) {
                 statusText.color = "#1a1a1a"
                 statusText.text  = "Saved to library:\n" + contents.replace("SAVED:", "") + "\n\nClosing in 4s..."
                 fetchButton.enabled = true
                 closeTimer.start()
-            } else if (type === 2) {
+            } else if (type == 2) {
                 statusText.color = "#cc2200"
                 statusText.text  = "Error: " + contents
                 fetchButton.enabled = true
-            } else if (type === 3) {
+            } else if (type == 3) {
                 statusText.color = "#555555"
                 statusText.text  = contents
             }
