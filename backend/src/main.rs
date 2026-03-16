@@ -131,7 +131,7 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
         }
     };
 
-    send(3, &format!("Generating PDF "{}"...", puzzle.title));
+    send(3, &format!("Generating PDF '{}'...", puzzle.title));
 
     let dir = "/home/root/.local/share/remarkable/xochitl";
     match pdf_gen::generate_pdf(&puzzle, dir) {
