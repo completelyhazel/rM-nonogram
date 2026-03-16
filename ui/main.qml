@@ -39,10 +39,7 @@ Item {
         id: closeTimer
         interval: 4000
         repeat: false
-        onTriggered: {
-            endpoint.terminate()
-            root.close()
-        }
+        onTriggered: root.close()
     }
 
     Rectangle {

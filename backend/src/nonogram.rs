@@ -68,12 +68,23 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std:
 
     let doc = Html::parse_document(&html);
 
-    // Title
-    let title = doc
-        .select(&Selector::parse("h1").unwrap())
-        .next()
-        .map(|e| e.text().collect::<String>().trim().to_string())
-        .filter(|s| !s.is_empty())
+    // Title — try h1, h2, then <title> tag (print pages are minimal HTML)
+    let title = ["h1", "h2", "h3"]
+        .iter()
+        .find_map(|sel| {
+            doc.select(&Selector::parse(sel).unwrap())
+                .next()
+                .map(|e| e.text().collect::<String>().trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            // Fall back to <title> tag, stripping common suffixes
+            doc.select(&Selector::parse("title").unwrap())
+                .next()
+                .map(|e| e.text().collect::<String>())
+                .map(|s| s.split('|').next().unwrap_or(&s).trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or_else(|| format!("Nonogram #{}", id));
     eprintln!("[nonogram] title: {}", title);
 
