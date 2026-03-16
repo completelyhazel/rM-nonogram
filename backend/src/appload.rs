@@ -166,12 +166,12 @@ impl AppLoadConnection {
 
     pub fn send_message(&mut self, msg_type: u32, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
         // Protocolo AppLoad: DOS datagrams SEQPACKET separados por mensaje
-        //   Datagram 1 (8 bytes): [BE u32 tipo][BE u32 longitud_contents]
+        //   Datagram 1 (8 bytes): [LE u32 longitud_contents][LE u32 tipo]
         //   Datagram 2 (N bytes): [contents como UTF-8]
         let c_bytes = contents.as_bytes();
         let mut header = [0u8; 8];
-        header[0..4].copy_from_slice(&msg_type.to_be_bytes());
-        header[4..8].copy_from_slice(&(c_bytes.len() as u32).to_be_bytes());
+        header[0..4].copy_from_slice(&(c_bytes.len() as u32).to_le_bytes());  // longitud primero
+        header[4..8].copy_from_slice(&msg_type.to_le_bytes());                 // tipo segundo
 
         eprintln!("[nonogram-fetcher] send type={} len={} contents={:?}",
             msg_type, c_bytes.len(), contents);
