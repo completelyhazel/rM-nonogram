@@ -2,7 +2,7 @@
 // add a title header and a puzzle-ID footer, then write xochitl metadata.
 
 use printpdf::*;
-use ::image::{self, GenericImageView};
+use ::image::codecs::png::PngDecoder;
 use std::fs;
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -20,8 +20,13 @@ pub fn generate_pdf(
 ) -> Result<String, Box<dyn std::error::Error>> {
 
     // --- Decode PNG ---------------------------------------------------------
-    let dyn_img = image::load_from_memory(&info.image_bytes)?;
-    let (img_w_px, img_h_px) = dyn_img.dimensions();
+    // printpdf::Image::try_from requires an ImageDecoder, not a DynamicImage.
+    // We use PngDecoder directly and also peek at the dimensions beforehand.
+    let (img_w_px, img_h_px) = {
+        use ::image::ImageDecoder;
+        let dec = PngDecoder::new(std::io::Cursor::new(&info.image_bytes))?;
+        dec.dimensions()
+    };
     eprintln!("[pdf] image {}x{} px", img_w_px, img_h_px);
 
     // --- Scale image to fill available area (preserving aspect ratio) -------
@@ -68,7 +73,7 @@ pub fn generate_pdf(
     let sx = draw_w / natural_w_mm;
     let sy = draw_h / natural_h_mm;
 
-    let pdf_image = Image::try_from(dyn_img)?;
+    let pdf_image = Image::try_from(PngDecoder::new(std::io::Cursor::new(&info.image_bytes))?)?;
     pdf_image.add_to_layer(layer.clone(), ImageTransform {
         translate_x: Some(Mm(img_x)),
         translate_y: Some(Mm(img_y)),
