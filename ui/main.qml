@@ -22,7 +22,7 @@ Item {
                 statusText.color = "#1a1a1a"
                 statusText.text  = "Saved to library:\n" + contents.replace("SAVED:", "") + "\n\nClosing in 4s..."
                 fetchButton.enabled = true
-                endpoint.terminate()
+                closeTimer.start()
             } else if (type == 2) {
                 statusText.color = "#cc2200"
                 statusText.text  = "Error: " + contents
@@ -32,6 +32,16 @@ Item {
                 statusText.text  = contents
             }
         }
+    }
+
+    // Auto-close 4 seconds after a successful save.
+    // Per AppLoad docs: endpoint.terminate() kills the backend AND immediately
+    // unloads all frontends — this is the correct way to close programmatically.
+    Timer {
+        id: closeTimer
+        interval: 4000
+        repeat: false
+        onTriggered: endpoint.terminate()
     }
 
     Rectangle {
