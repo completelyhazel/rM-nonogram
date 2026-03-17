@@ -3,7 +3,7 @@ mod nonogram;
 mod pdf_gen;
 
 use std::env;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use appload::AppLoadConnection;
@@ -15,6 +15,10 @@ fn main() {
         eprintln!("[fetcher] ERROR: socket path required as argv[1]");
         std::process::exit(1);
     }
+
+    // Dump xochitl's D-Bus introspection at startup so we can see every
+    // available object path and method — useful for debugging open_in_xochitl.
+    dbus_introspect();
 
     let socket_path = &args[1];
     eprintln!("[fetcher] connecting to socket: {}", socket_path);
@@ -29,26 +33,16 @@ fn main() {
 
     eprintln!("[fetcher] connected, waiting for messages...");
 
-    // Channel for worker threads to send responses back to the main loop.
     let (tx, rx) = mpsc::channel::<(u32, String)>();
-
-    // Handle to the currently active download worker (at most one at a time).
     let mut active_worker: Option<JoinHandle<()>> = None;
-
-    // Stores the UUID of the last successfully saved document so we can open
-    // it in xochitl via D-Bus without restarting the whole process.
-    let saved_uuid: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let saved_uuid: std::sync::Arc<Mutex<Option<String>>> =
+        std::sync::Arc::new(Mutex::new(None));
 
     loop {
-        // Drain any pending responses from the worker (non-blocking).
         while let Ok((t, s)) = rx.try_recv() {
             eprintln!("[fetcher] forwarding type={} to frontend", t);
 
             if t == 1 {
-                // Worker confirmed a successful save.
-                // Extract the document UUID from the path and ask xochitl to
-                // open it immediately — this records it in the recents list
-                // and lets the user jump straight to the puzzle.
                 let path = s.trim_start_matches("SAVED:");
                 if let Some(uuid) = extract_uuid(path) {
                     eprintln!("[fetcher] opening document {} in xochitl", uuid);
@@ -60,7 +54,6 @@ fn main() {
             let _ = conn.send_message(t, &s);
         }
 
-        // Wait for a message from the frontend (blocks up to SO_RCVTIMEO = 300 ms).
         match conn.read_message() {
             Ok(msg) => {
                 eprintln!("[fetcher] received type={}", msg.msg_type);
@@ -72,12 +65,9 @@ fn main() {
                                 "[fetcher] fetch request: bw={} size={} difficulty={}",
                                 req.type_bw, req.size, req.difficulty
                             );
-
-                            // Wait for any previous fetch before starting a new one.
                             if let Some(prev) = active_worker.take() {
                                 let _ = prev.join();
                             }
-
                             let tx2 = tx.clone();
                             active_worker = Some(std::thread::spawn(move || {
                                 handle_fetch(tx2, req);
@@ -92,13 +82,10 @@ fn main() {
                         }
                     }
                 }
-                // msg_type 99 / 43 / 1 = internal AppLoad handshake — ignore
             }
             Err(e) => {
                 let s = e.to_string();
-                if s == "timeout" {
-                    continue;
-                }
+                if s == "timeout" { continue; }
                 if s.contains("expected value")
                     || s.contains("invalid type")
                     || s.contains("trailing")
@@ -111,19 +98,12 @@ fn main() {
         }
     }
 
-    // ── Graceful shutdown ─────────────────────────────────────────────────────
-    //
-    // The socket is gone — the user has closed the AppLoad overlay.
-    // Wait for any in-progress download to finish writing its PDF to disk
-    // before we exit, so the file is always complete when xochitl reads it.
+    // Wait for any in-progress download to finish writing to disk.
     if let Some(handle) = active_worker {
         eprintln!("[fetcher] socket closed while download in progress — waiting...");
         let _ = handle.join();
-        eprintln!("[fetcher] download finished.");
 
-        // If the download completed just as the overlay was closed we still
-        // need to open the document (the main loop may have already exited
-        // before the worker sent its type=1 response).
+        // Handle the case where the worker finished just as the overlay closed.
         while let Ok((t, s)) = rx.try_recv() {
             if t == 1 {
                 let path = s.trim_start_matches("SAVED:");
@@ -135,55 +115,182 @@ fn main() {
         }
     }
 
-    // No xochitl restart needed: open_in_xochitl() already asked xochitl to
-    // open the document via D-Bus, which also causes it to appear in recents.
     eprintln!("[fetcher] exiting.");
 }
 
 // ── D-Bus helpers ─────────────────────────────────────────────────────────────
 
-/// Ask xochitl to open a document by UUID using its D-Bus interface.
+/// Introspect the xochitl D-Bus service and dump everything to stderr.
 ///
-/// This works on reMarkable Paper Pro firmware without touching xochitl's
-/// lifecycle — the document opens in the background and is recorded in the
-/// recents list as soon as the AppLoad overlay is dismissed.
-fn open_in_xochitl(uuid: &str) {
-    // The interface name differs slightly across firmware versions; we try the
-    // most common one first.  Failures are non-fatal: the document will still
-    // appear in the library on the next normal xochitl startup.
-    let result = std::process::Command::new("dbus-send")
+/// Runs once at startup.  In the journal look for lines tagged [dbus] — they
+/// show every object path, interface and method that xochitl exposes, so you
+/// can update CANDIDATE_CALLS in open_in_xochitl() with the correct values.
+fn dbus_introspect() {
+    eprintln!("[dbus] ── xochitl introspection ──────────────────────────────");
+
+    // 1. List every well-known name on the system bus so we can confirm the
+    //    exact service name xochitl registers.
+    let names_out = std::process::Command::new("dbus-send")
         .args([
             "--system",
-            "--type=method_call",
-            "--dest=com.reMarkable.xochitl",
-            "/com/reMarkable/xochitl",
-            "com.reMarkable.xochitl1.openDocumentRequest",
-            &format!("string:{}", uuid),
+            "--print-reply",
+            "--dest=org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.ListNames",
         ])
-        .status();
+        .output();
 
-    match result {
-        Ok(s) if s.success() => {
-            eprintln!("[fetcher] D-Bus openDocumentRequest succeeded");
+    match names_out {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            for line in stdout.lines() {
+                let l = line.trim().to_lowercase();
+                if l.contains("xochitl") || l.contains("remarkable") {
+                    eprintln!("[dbus]   bus name found: {}", line.trim());
+                }
+            }
         }
-        Ok(s) => {
-            eprintln!("[fetcher] D-Bus returned exit code {:?}, trying fallback", s.code());
-            // Fallback: some firmware versions use a slightly different method name.
-            let _ = std::process::Command::new("dbus-send")
-                .args([
-                    "--system",
-                    "--type=method_call",
-                    "--dest=com.reMarkable.xochitl",
-                    "/com/reMarkable/xochitl",
-                    "com.reMarkable.xochitl1.openFile",
-                    &format!("string:{}", uuid),
-                ])
-                .spawn();
-        }
-        Err(e) => {
-            eprintln!("[fetcher] D-Bus call failed: {} (document will appear on next startup)", e);
+        Err(e) => eprintln!("[dbus]   ListNames failed: {}", e),
+    }
+
+    // 2. Introspect the root object of the most likely service names.
+    for dest in &[
+        "com.reMarkable.xochitl",
+        "com.remarkable.xochitl",
+    ] {
+        eprintln!("[dbus]   introspecting {} at /", dest);
+        let out = std::process::Command::new("dbus-send")
+            .args([
+                "--system",
+                "--print-reply",
+                &format!("--dest={}", dest),
+                "/",
+                "org.freedesktop.DBus.Introspectable.Introspect",
+            ])
+            .output();
+
+        match out {
+            Ok(o) if o.status.success() => {
+                let xml = String::from_utf8_lossy(&o.stdout);
+                for line in xml.lines() {
+                    let t = line.trim();
+                    if t.starts_with("<node")
+                        || t.starts_with("<interface")
+                        || t.starts_with("<method")
+                        || t.starts_with("<signal")
+                        || t.starts_with("<property")
+                    {
+                        eprintln!("[dbus]     {}", t);
+                    }
+                }
+            }
+            Ok(o) => {
+                eprintln!(
+                    "[dbus]   {} failed ({}): {}",
+                    dest,
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+            }
+            Err(e) => eprintln!("[dbus]   {} error: {}", dest, e),
         }
     }
+
+    eprintln!("[dbus] ────────────────────────────────────────────────────────");
+}
+
+/// Ask xochitl to open a document by UUID.
+///
+/// Each entry in `candidates` is tried in order, with --print-reply so we see
+/// the actual response.  The first call that returns exit 0 wins.
+///
+/// After running once, check the journal for "[dbus]" lines and update this
+/// list if needed.
+fn open_in_xochitl(uuid: &str) {
+    // (dest, object_path, full_method_with_interface)
+    let candidates: &[(&str, &str, &str)] = &[
+        // Root object, most common on recent firmware
+        (
+            "com.reMarkable.xochitl",
+            "/",
+            "com.reMarkable.xochitl.openDocumentRequest",
+        ),
+        (
+            "com.reMarkable.xochitl",
+            "/",
+            "com.reMarkable.xochitl.openDocumentWithId",
+        ),
+        (
+            "com.reMarkable.xochitl",
+            "/",
+            "com.reMarkable.xochitl.openFile",
+        ),
+        // Versioned interface variant
+        (
+            "com.reMarkable.xochitl",
+            "/",
+            "com.reMarkable.xochitl1.openDocumentRequest",
+        ),
+        // Non-root path variants
+        (
+            "com.reMarkable.xochitl",
+            "/com/reMarkable/xochitl",
+            "com.reMarkable.xochitl.openDocumentRequest",
+        ),
+        (
+            "com.reMarkable.xochitl",
+            "/com/reMarkable/xochitl",
+            "com.reMarkable.xochitl1.openDocumentRequest",
+        ),
+        // Lowercase service variant used by some firmwares
+        (
+            "com.remarkable.xochitl",
+            "/",
+            "com.remarkable.xochitl.openDocumentRequest",
+        ),
+    ];
+
+    for (dest, path, method) in candidates {
+        eprintln!("[fetcher] trying D-Bus: dest={} path={} method={}", dest, path, method);
+
+        let out = std::process::Command::new("dbus-send")
+            .args([
+                "--system",
+                "--print-reply",           // wait for reply and show it
+                &format!("--dest={}", dest),
+                path,
+                method,
+                &format!("string:{}", uuid),
+            ])
+            .output();
+
+        match out {
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                eprintln!(
+                    "[fetcher]   exit={} | stdout: {} | stderr: {}",
+                    o.status,
+                    stdout.trim(),
+                    stderr.trim()
+                );
+
+                if o.status.success() {
+                    eprintln!(
+                        "[fetcher]   ✓ accepted by xochitl — dest={} path={} method={}",
+                        dest, path, method
+                    );
+                    return;
+                }
+            }
+            Err(e) => eprintln!("[fetcher]   exec error: {}", e),
+        }
+    }
+
+    eprintln!(
+        "[fetcher] all D-Bus candidates exhausted — \
+         document will appear in library after next xochitl startup"
+    );
 }
 
 /// Extract the UUID stem from a full PDF path.
@@ -214,7 +321,6 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
 
     eprintln!("[worker] {} puzzle IDs found", ids.len());
 
-    // Pick a pseudo-random starting puzzle, retry up to 5 on failure.
     let base = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -244,7 +350,10 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
         }
         match result {
             Some(p) => p,
-            None => { send(2, "Could not download any puzzle after multiple attempts."); return; }
+            None => {
+                send(2, "Could not download any puzzle after multiple attempts.");
+                return;
+            }
         }
     };
 
