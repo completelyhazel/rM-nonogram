@@ -1,4 +1,10 @@
-# rM-nonogram
+<div align="center">
+
+<img align="center" src="./icon.png" width=100 height=100></img>
+
+# rM-nonogram 
+
+</div>
 
 [AppLoad](https://github.com/asivery/rm-appload) application that downloads nonograms from [nonograms.org](https://www.nonograms.org), and saves them as PDFs on your library.
 
