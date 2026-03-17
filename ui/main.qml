@@ -18,30 +18,25 @@ Item {
         applicationID: "com.nonogram.fetcher"
 
         onMessageReceived: (type, contents) => {
-            if (type == 1) {
+            if (type === 1) {
+                // Success: backend has finished saving the PDF.
                 statusText.color = "#1a1a1a"
-                statusText.text  = "Saved to library:\n" + contents.replace("SAVED:", "") + "\n\nClosing in 4s..."
+                statusText.text  = "Saved to library:\n"
+                                 + contents.replace("SAVED:", "")
+                                 + "\n\nYou can close the app."
                 fetchButton.enabled = true
-                closeTimer.start()
-            } else if (type == 2) {
+                // No auto-close timer: the user decides when to leave.
+                // (An auto-close killed the backend mid-download in some cases.)
+            } else if (type === 2) {
                 statusText.color = "#cc2200"
                 statusText.text  = "Error: " + contents
                 fetchButton.enabled = true
-            } else if (type == 3) {
+            } else if (type === 3) {
+                // Progress update from the worker thread
                 statusText.color = "#555555"
                 statusText.text  = contents
             }
         }
-    }
-
-    // Auto-close 4 seconds after a successful save.
-    // Per AppLoad docs: endpoint.terminate() kills the backend AND immediately
-    // unloads all frontends — this is the correct way to close programmatically.
-    Timer {
-        id: closeTimer
-        interval: 4000
-        repeat: false
-        onTriggered: endpoint.terminate()
     }
 
     Rectangle {
@@ -183,7 +178,7 @@ Item {
 
         Item { height: 40 }
 
-        // Status text — no animated spinner (eink-unfriendly)
+        // Status / progress text — no animated spinner (e-ink unfriendly)
         Text {
             id: statusText
             Layout.alignment: Qt.AlignHCenter
