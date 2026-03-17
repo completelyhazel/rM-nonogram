@@ -2,25 +2,19 @@ use std::io::Read;
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
-// ── Request / response types ──────────────────────────────────────────────────
-
 #[derive(Deserialize, Debug, Clone)]
 pub struct FetchRequest {
     pub type_bw:    bool,
     pub size:       String,   // "5", "10", "15", "20", "25"
-    pub difficulty: u32,      // 0=any (filtering not yet implemented)
+    pub difficulty: u32,      // 0=any
 }
 
-/// Everything we need to produce a PDF.
 pub struct NonogramInfo {
     pub id:          u32,
     pub title:       String,
     pub image_bytes: Vec<u8>,
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
-/// Return a list of puzzle IDs from the listing page matching the request.
 pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
     let base = if req.type_bw {
         "https://www.nonograms.org/nonograms"
@@ -37,25 +31,52 @@ pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::err
         _    => "",
     };
 
-    // Rotate through pages 1-8 so repeated fetches return different puzzles
-    let page = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() % 8) + 1;
+    // get page 1 to get the max page amount
+    let first_url = format!("{}{}/p/1", base, size_path);
+    eprintln!("[nonogram] fetching page 1 to count pages: {}", first_url);
+    let first_body = fetch_html(&first_url)?;
 
-    let url = format!("{}{}/p/{}", base, size_path, page);
-    eprintln!("[nonogram] search url: {}", url);
+    let total_pages = parse_total_pages(&first_body).unwrap_or(1);
+    eprintln!("[nonogram] total pages: {}", total_pages);
 
-    let body = fetch_html(&url)?;
-    eprintln!("[nonogram] search page: {} bytes", body.len());
+    let page = if total_pages <= 1 {
+        1
+    } else {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos() as usize;
+        (seed % total_pages) + 1
+    };
+    eprintln!("[nonogram] selected page {}/{}", page, total_pages);
+
+    // avoid more requests if were lucky!!!
+    let body = if page == 1 {
+        first_body
+    } else {
+        let url = format!("{}{}/p/{}", base, size_path, page);
+        eprintln!("[nonogram] fetching page: {}", url);
+        fetch_html(&url)?
+    };
 
     parse_ids(&body)
 }
 
-/// Download the print-page for `id`, extract the puzzle image URL, fetch it,
-/// and return a NonogramInfo ready for PDF generation.
+fn parse_total_pages(html: &str) -> Option<usize> {
+    let doc = Html::parse_document(html);
+    let sel = Selector::parse("a[href*='/p/']").unwrap();
+    let max = doc
+        .select(&sel)
+        .filter_map(|el| {
+            let href = el.value().attr("href")?;
+            let part = href.split("/p/").nth(1)?;
+            part.split('?').next()?.trim().parse::<usize>().ok()
+        })
+        .max();
+    max.or(Some(1))
+}
+
 pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std::error::Error>> {
-    // The print page contains the fully-rendered nonogram (clues + empty grid)
     let print_url = if is_bw {
         format!("https://www.nonograms.org/nonogramprint/i/{}", id)
     } else {
@@ -68,7 +89,7 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std:
 
     let doc = Html::parse_document(&html);
 
-    // Title — try h1, h2, then <title> tag (print pages are minimal HTML)
+    // title, try h1, h2, then <title> tag (print pages are minimal HTML)
     let title = ["h1", "h2", "h3"]
         .iter()
         .find_map(|sel| {
@@ -88,14 +109,14 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std:
         .unwrap_or_else(|| format!("Nonogram #{}", id));
     eprintln!("[nonogram] title: {}", title);
 
-    // Find the puzzle image — hosted on static.nonograms.org
+    // find da image
     let img_sel = Selector::parse("img[src*='static.nonograms.org']").unwrap();
     let img_url = doc
         .select(&img_sel)
         .next()
         .and_then(|el| el.value().attr("src"))
         .ok_or("Could not find puzzle image on print page")?
-        .replace("_12_1_", "_19_4_")
+        .replace("_12_1_", "_19_4_") // highest res version
         .to_string();
 
     eprintln!("[nonogram] image url: {}", img_url);
@@ -105,8 +126,6 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std:
 
     Ok(NonogramInfo { id, title, image_bytes })
 }
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn parse_ids(html: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
     let doc = Html::parse_document(html);

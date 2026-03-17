@@ -1,8 +1,8 @@
 {
   "id": "com.nonogram.fetcher",
-  "name": "Nonogram Fetcher",
+  "name": "rM-nonogram",
   "loadsBackend": true,
   "entry": "/main.qml",
   "canHaveMultipleFrontends": false,
-  "supportsScaling": false
+  "supportsScaling": true
 }

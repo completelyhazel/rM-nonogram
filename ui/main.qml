@@ -18,19 +18,18 @@ Item {
         applicationID: "com.nonogram.fetcher"
 
         onMessageReceived: (type, contents) => {
-            if (type === 1) {
-                // PDF saved — the backend will restart xochitl in ~2 s,
-                // which will also close this overlay automatically.
+            console.log("[qml] received type=" + type + " contents=" + contents)
+            if (type == 1) { // success
                 statusText.color = "#1a6b1a"
                 statusText.text  = "✓  Saved!\n\nRestarting library…"
                 fetchButton.enabled = false
 
-            } else if (type === 2) {
+            } else if (type == 2) { // erro
                 statusText.color    = "#cc2200"
                 statusText.text     = "Error: " + contents
                 fetchButton.enabled = true
 
-            } else if (type === 3) {
+            } else if (type == 3) { // info
                 statusText.color = "#555555"
                 statusText.text  = contents
             }
@@ -46,15 +45,15 @@ Item {
         anchors {
             horizontalCenter: parent.horizontalCenter
             top: parent.top
-            topMargin: 80
+            topMargin: 120
         }
         width: 900
         spacing: 0
 
-        // ── Title ─────────────────────────────────────────────────────────────
+        // decoration
         Text {
             Layout.alignment: Qt.AlignHCenter
-            text: "Nonogram Fetcher"
+            text: "rM-nonogram"
             font.pixelSize: 64
             font.weight: Font.Light
             color: "#1a1a1a"
@@ -64,9 +63,9 @@ Item {
 
         Text {
             Layout.alignment: Qt.AlignHCenter
-            text: "nonograms.org"
+            text: "getting puzzles from nonograms.org !! :3"
             font.pixelSize: 28
-            color: "#888888"
+            color: "#747474"
         }
 
         Item { height: 60 }
@@ -75,7 +74,7 @@ Item {
 
         Item { height: 50 }
 
-        // ── Type ──────────────────────────────────────────────────────────────
+        // type
         Text {
             Layout.alignment: Qt.AlignLeft
             text: "Type"
@@ -94,7 +93,7 @@ Item {
 
         Item { height: 40 }
 
-        // ── Grid size ─────────────────────────────────────────────────────────
+        // grid size
         Text {
             Layout.alignment: Qt.AlignLeft
             text: "Grid Size"
@@ -107,13 +106,13 @@ Item {
 
         OptionRow {
             id: sizeSelector
-            model: ["XSmall", "Small", "Medium", "Large", "XLarge"]
-            selected: 1
+            model: ["Tiny", "Small", "Medium", "Large", "Huge"]
+            selected: 0
         }
 
         Item { height: 40 }
 
-        // ── Difficulty ────────────────────────────────────────────────────────
+        // difficulty
         Text {
             Layout.alignment: Qt.AlignLeft
             text: "Difficulty"
@@ -136,7 +135,7 @@ Item {
 
         Item { height: 60 }
 
-        // ── Fetch button ──────────────────────────────────────────────────────
+        // button
         Rectangle {
             id: fetchButton
             Layout.alignment: Qt.AlignHCenter
@@ -149,7 +148,7 @@ Item {
 
             Text {
                 anchors.centerIn: parent
-                text: "Fetch Nonogram"
+                text: "Download Nonogram"
                 font.pixelSize: 36
                 color: "#ffffff"
                 font.weight: Font.Medium
@@ -186,22 +185,6 @@ Item {
             wrapMode: Text.WordWrap
             horizontalAlignment: Text.AlignHCenter
         }
-
-        Item { height: 60 }
-
-        Text {
-            Layout.alignment: Qt.AlignHCenter
-            text: "Close"
-            font.pixelSize: 28
-            color: "#999999"
-
-            MouseArea {
-                anchors.fill: parent
-                onClicked: root.close()
-            }
-        }
-
-        Item { height: 40 }
     }
 
     component OptionRow: RowLayout {

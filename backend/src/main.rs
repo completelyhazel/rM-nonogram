@@ -32,13 +32,13 @@ fn main() {
     let mut active_worker: Option<JoinHandle<()>> = None;
 
     loop {
-        // Drain any pending responses from the worker (non-blocking).
+        // drain any pending responses from the worker (non-blocking)
         while let Ok((t, s)) = rx.try_recv() {
             eprintln!("[fetcher] forwarding type={} to frontend", t);
             let _ = conn.send_message(t, &s);
         }
 
-        // Block up to SO_RCVTIMEO (300 ms) waiting for a frontend message.
+        // block up to SO_RCVTIMEO (300 ms) waiting for a frontend message
         match conn.read_message() {
             Ok(msg) => {
                 eprintln!("[fetcher] received type={}", msg.msg_type);
@@ -67,7 +67,6 @@ fn main() {
                         }
                     }
                 }
-                // type 43 = AppLoad handshake ping — ignore silently
             }
             Err(e) => {
                 let s = e.to_string();
@@ -84,9 +83,7 @@ fn main() {
         }
     }
 
-    // Wait for any in-progress download (the worker restarts xochitl itself,
-    // but if the user closed the overlay before the download finished we still
-    // want to let it complete and trigger the restart).
+    // wait for any in-progress download
     if let Some(handle) = active_worker {
         eprintln!("[fetcher] download in progress — waiting...");
         let _ = handle.join();
@@ -94,8 +91,6 @@ fn main() {
 
     eprintln!("[fetcher] exiting.");
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
     let send = |t: u32, s: &str| {
@@ -156,8 +151,7 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
         Ok(path) => {
             send(1, &format!("SAVED:{}", path));
 
-            // Give the main loop time to forward the type=1 message to the
-            // frontend so the success screen is visible before xochitl dies.
+            // doing this to give xochitl some time to save it before it restarts
             std::thread::sleep(std::time::Duration::from_secs(2));
 
             eprintln!("[worker] restarting xochitl to index new document...");
