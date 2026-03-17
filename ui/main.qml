@@ -21,7 +21,7 @@ Item {
             console.log("[qml] received type=" + type + " contents=" + contents)
             if (type == 1) { // success
                 statusText.color = "#1a6b1a"
-                statusText.text  = "✓  Saved!\n\nRestarting library…"
+                statusText.text  = "Saved successfully!\n\nRestarting library…"
                 fetchButton.enabled = false
 
             } else if (type == 2) { // erro
@@ -87,7 +87,7 @@ Item {
 
         OptionRow {
             id: typeSelector
-            model: ["Black & White", "Color"]
+            model: ["Black & White", "Colored"]
             selected: 0
         }
 
@@ -115,8 +115,8 @@ Item {
         Text {
             Layout.alignment: Qt.AlignHCenter
             text: "\"Tiny\" recommended"
-            font.pixelSize: 24
-            color: "#858585"
+            font.pixelSize: 26
+            color: "#6e6e6e"
         }
 
 
