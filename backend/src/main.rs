@@ -16,9 +16,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Dump xochitl's D-Bus introspection at startup so we can see every
-    // available object path and method — useful for debugging open_in_xochitl.
-    dbus_introspect();
+    // Dump everything we can find on D-Bus and identify xochitl's PID so that
+    // notify_xochitl() has the best possible information to work with.
+    dbus_introspect_all();
 
     let socket_path = &args[1];
     eprintln!("[fetcher] connecting to socket: {}", socket_path);
@@ -45,8 +45,8 @@ fn main() {
             if t == 1 {
                 let path = s.trim_start_matches("SAVED:");
                 if let Some(uuid) = extract_uuid(path) {
-                    eprintln!("[fetcher] opening document {} in xochitl", uuid);
-                    open_in_xochitl(&uuid);
+                    eprintln!("[fetcher] notifying xochitl about {}", uuid);
+                    notify_xochitl(path, &uuid);
                     *saved_uuid.lock().unwrap() = Some(uuid);
                 }
             }
@@ -98,18 +98,15 @@ fn main() {
         }
     }
 
-    // Wait for any in-progress download to finish writing to disk.
     if let Some(handle) = active_worker {
         eprintln!("[fetcher] socket closed while download in progress — waiting...");
         let _ = handle.join();
-
-        // Handle the case where the worker finished just as the overlay closed.
         while let Ok((t, s)) = rx.try_recv() {
             if t == 1 {
                 let path = s.trim_start_matches("SAVED:");
                 if let Some(uuid) = extract_uuid(path) {
-                    eprintln!("[fetcher] (late) opening document {} in xochitl", uuid);
-                    open_in_xochitl(&uuid);
+                    eprintln!("[fetcher] (late) notifying xochitl about {}", uuid);
+                    notify_xochitl(path, &uuid);
                 }
             }
         }
@@ -118,192 +115,221 @@ fn main() {
     eprintln!("[fetcher] exiting.");
 }
 
-// ── D-Bus helpers ─────────────────────────────────────────────────────────────
+// ── Notification strategy ─────────────────────────────────────────────────────
+//
+// We try every known mechanism in order.  Each attempt is logged so the
+// journal tells us exactly which one xochitl responded to.
 
-/// Introspect the xochitl D-Bus service and dump everything to stderr.
-///
-/// Runs once at startup.  In the journal look for lines tagged [dbus] — they
-/// show every object path, interface and method that xochitl exposes, so you
-/// can update CANDIDATE_CALLS in open_in_xochitl() with the correct values.
-fn dbus_introspect() {
-    eprintln!("[dbus] ── xochitl introspection ──────────────────────────────");
+fn notify_xochitl(full_path: &str, uuid: &str) {
+    // 1. Try every D-Bus service we actually found on the bus.
+    try_dbus_sync(full_path, uuid);
 
-    // 1. List every well-known name on the system bus so we can confirm the
-    //    exact service name xochitl registers.
-    let names_out = std::process::Command::new("dbus-send")
-        .args([
+    // 2. Send SIGUSR1 / SIGUSR2 to xochitl — some firmware versions use these
+    //    as a "rescan library" or "open file" signal.
+    try_signals_to_xochitl(uuid);
+}
+
+/// Try methods on the services that are actually present on this device.
+fn try_dbus_sync(full_path: &str, uuid: &str) {
+    // (dest, object_path, method, arg_type, arg_value)
+    // arg_type: "string" | "path" | ""  (empty = no argument)
+    let candidates: &[(&str, &str, &str, &str, &str)] = &[
+        // no.remarkable.sync — try every plausible method name
+        ("no.remarkable.sync", "/",
+            "no.remarkable.sync.openDocument", "string", uuid),
+        ("no.remarkable.sync", "/",
+            "no.remarkable.sync.openDocumentRequest", "string", uuid),
+        ("no.remarkable.sync", "/",
+            "no.remarkable.sync.openFile", "string", full_path),
+        ("no.remarkable.sync", "/",
+            "no.remarkable.sync.rescan", "", ""),
+        ("no.remarkable.sync", "/",
+            "no.remarkable.sync.refreshLibrary", "", ""),
+        ("no.remarkable.sync", "/",
+            "no.remarkable.sync.fileAdded", "string", full_path),
+        ("no.remarkable.sync", "/",
+            "no.remarkable.sync.documentAdded", "string", uuid),
+        // Same names under /no/remarkable/sync path
+        ("no.remarkable.sync", "/no/remarkable/sync",
+            "no.remarkable.sync.openDocument", "string", uuid),
+        ("no.remarkable.sync", "/no/remarkable/sync",
+            "no.remarkable.sync.rescan", "", ""),
+        ("no.remarkable.sync", "/no/remarkable/sync",
+            "no.remarkable.sync.fileAdded", "string", full_path),
+        // no.remarkable.marker (pen service — unlikely, but log what it exposes)
+        ("no.remarkable.marker", "/",
+            "no.remarkable.marker.openDocument", "string", uuid),
+    ];
+
+    for (dest, path, method, arg_type, arg_val) in candidates {
+        let mut cmd = std::process::Command::new("dbus-send");
+        cmd.args([
             "--system",
             "--print-reply",
-            "--dest=org.freedesktop.DBus",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus.ListNames",
-        ])
-        .output();
+            &format!("--dest={}", dest),
+            path,
+            method,
+        ]);
+        if !arg_type.is_empty() {
+            cmd.arg(&format!("{}:{}", arg_type, arg_val));
+        }
 
-    match names_out {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            for line in stdout.lines() {
-                let l = line.trim().to_lowercase();
-                if l.contains("xochitl") || l.contains("remarkable") {
-                    eprintln!("[dbus]   bus name found: {}", line.trim());
+        eprintln!("[dbus] trying {} {} {}", dest, path, method);
+        match cmd.output() {
+            Ok(o) => {
+                let out = String::from_utf8_lossy(&o.stdout);
+                let err = String::from_utf8_lossy(&o.stderr);
+                eprintln!("[dbus]   exit={} stdout={:?} stderr={:?}",
+                    o.status, out.trim(), err.trim());
+                if o.status.success() {
+                    eprintln!("[dbus]   ✓ accepted — {} {} {}", dest, path, method);
+                    return;
                 }
             }
+            Err(e) => eprintln!("[dbus]   exec error: {}", e),
         }
-        Err(e) => eprintln!("[dbus]   ListNames failed: {}", e),
+    }
+}
+
+/// Send SIGUSR1 then SIGUSR2 to every xochitl process we can find.
+/// On some firmware SIGUSR1 triggers a library rescan.
+/// On some firmware SIGUSR2 opens the last-modified document.
+fn try_signals_to_xochitl(uuid: &str) {
+    let pids = find_xochitl_pids();
+    if pids.is_empty() {
+        eprintln!("[signal] no xochitl PIDs found");
+        return;
     }
 
-    // 2. Introspect the root object of the most likely service names.
-    for dest in &[
-        "com.reMarkable.xochitl",
-        "com.remarkable.xochitl",
-    ] {
-        eprintln!("[dbus]   introspecting {} at /", dest);
-        let out = std::process::Command::new("dbus-send")
-            .args([
-                "--system",
-                "--print-reply",
-                &format!("--dest={}", dest),
-                "/",
-                "org.freedesktop.DBus.Introspectable.Introspect",
-            ])
-            .output();
+    for pid in &pids {
+        eprintln!("[signal] sending SIGUSR1 to xochitl PID {}", pid);
+        let _ = std::process::Command::new("kill")
+            .args(["-SIGUSR1", pid])
+            .status();
 
-        match out {
-            Ok(o) if o.status.success() => {
-                let xml = String::from_utf8_lossy(&o.stdout);
-                for line in xml.lines() {
-                    let t = line.trim();
-                    if t.starts_with("<node")
-                        || t.starts_with("<interface")
-                        || t.starts_with("<method")
-                        || t.starts_with("<signal")
-                        || t.starts_with("<property")
-                    {
-                        eprintln!("[dbus]     {}", t);
+        // Small gap so xochitl processes SIGUSR1 before receiving SIGUSR2.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        eprintln!("[signal] sending SIGUSR2 to xochitl PID {}", pid);
+        let _ = std::process::Command::new("kill")
+            .args(["-SIGUSR2", pid])
+            .status();
+    }
+
+    // Give xochitl a moment to pick up the new file after the signal.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    eprintln!("[signal] done — check if document {} appeared", uuid);
+}
+
+/// Return a list of PIDs whose command name is "xochitl".
+fn find_xochitl_pids() -> Vec<String> {
+    // Try pidof first (faster), fall back to scanning /proc manually.
+    let pidof = std::process::Command::new("pidof")
+        .arg("xochitl")
+        .output();
+
+    if let Ok(o) = pidof {
+        if o.status.success() {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let pids: Vec<String> = stdout
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            eprintln!("[signal] xochitl PIDs (pidof): {:?}", pids);
+            return pids;
+        }
+    }
+
+    // Fall back: read /proc/*/comm
+    let mut pids = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.chars().all(|c| c.is_ascii_digit()) {
+                let comm_path = format!("/proc/{}/comm", name_str);
+                if let Ok(comm) = std::fs::read_to_string(&comm_path) {
+                    if comm.trim() == "xochitl" {
+                        pids.push(name_str.to_string());
                     }
                 }
             }
-            Ok(o) => {
-                eprintln!(
-                    "[dbus]   {} failed ({}): {}",
-                    dest,
-                    o.status,
-                    String::from_utf8_lossy(&o.stderr).trim()
-                );
+        }
+    }
+    eprintln!("[signal] xochitl PIDs (/proc scan): {:?}", pids);
+    pids
+}
+
+// ── D-Bus introspection at startup ────────────────────────────────────────────
+
+fn dbus_introspect_all() {
+    eprintln!("[dbus] ── full system bus introspection ──────────────────────");
+
+    // Print every service name — look for anything remarkable/xochitl related.
+    let names = dbus_call(
+        "org.freedesktop.DBus", "/org/freedesktop/DBus",
+        "org.freedesktop.DBus.ListNames", &[],
+    );
+    eprintln!("[dbus] all bus names:\n{}", names.trim());
+
+    // Fully introspect the services we know exist.
+    for dest in &["no.remarkable.sync", "no.remarkable.marker", "com.remarkable.devicepolicy"] {
+        eprintln!("[dbus] ── introspecting {} ──", dest);
+
+        // Try root object first, then guessed sub-paths.
+        for path in &["/", &format!("/{}", dest.replace('.', "/"))] {
+            let xml = dbus_call(dest, path, "org.freedesktop.DBus.Introspectable.Introspect", &[]);
+            if xml.trim().is_empty() || xml.contains("ServiceUnknown") || xml.contains("error") {
+                continue;
             }
-            Err(e) => eprintln!("[dbus]   {} error: {}", dest, e),
+            eprintln!("[dbus]   path {} :", path);
+            for line in xml.lines() {
+                let t = line.trim();
+                if t.starts_with("<node")
+                    || t.starts_with("<interface")
+                    || t.starts_with("<method")
+                    || t.starts_with("<signal")
+                    || t.starts_with("<property")
+                    || t.starts_with("<arg")
+                {
+                    eprintln!("[dbus]     {}", t);
+                }
+            }
         }
     }
 
     eprintln!("[dbus] ────────────────────────────────────────────────────────");
 }
 
-/// Ask xochitl to open a document by UUID.
-///
-/// Each entry in `candidates` is tried in order, with --print-reply so we see
-/// the actual response.  The first call that returns exit 0 wins.
-///
-/// After running once, check the journal for "[dbus]" lines and update this
-/// list if needed.
-fn open_in_xochitl(uuid: &str) {
-    // (dest, object_path, full_method_with_interface)
-    let candidates: &[(&str, &str, &str)] = &[
-        // Root object, most common on recent firmware
-        (
-            "com.reMarkable.xochitl",
-            "/",
-            "com.reMarkable.xochitl.openDocumentRequest",
-        ),
-        (
-            "com.reMarkable.xochitl",
-            "/",
-            "com.reMarkable.xochitl.openDocumentWithId",
-        ),
-        (
-            "com.reMarkable.xochitl",
-            "/",
-            "com.reMarkable.xochitl.openFile",
-        ),
-        // Versioned interface variant
-        (
-            "com.reMarkable.xochitl",
-            "/",
-            "com.reMarkable.xochitl1.openDocumentRequest",
-        ),
-        // Non-root path variants
-        (
-            "com.reMarkable.xochitl",
-            "/com/reMarkable/xochitl",
-            "com.reMarkable.xochitl.openDocumentRequest",
-        ),
-        (
-            "com.reMarkable.xochitl",
-            "/com/reMarkable/xochitl",
-            "com.reMarkable.xochitl1.openDocumentRequest",
-        ),
-        // Lowercase service variant used by some firmwares
-        (
-            "com.remarkable.xochitl",
-            "/",
-            "com.remarkable.xochitl.openDocumentRequest",
-        ),
+/// Run dbus-send --print-reply and return stdout + stderr as a single string.
+fn dbus_call(dest: &str, path: &str, method: &str, extra: &[&str]) -> String {
+    let mut args = vec![
+        "--system".to_string(),
+        "--print-reply".to_string(),
+        format!("--dest={}", dest),
+        path.to_string(),
+        method.to_string(),
     ];
+    args.extend(extra.iter().map(|s| s.to_string()));
 
-    for (dest, path, method) in candidates {
-        eprintln!("[fetcher] trying D-Bus: dest={} path={} method={}", dest, path, method);
-
-        let out = std::process::Command::new("dbus-send")
-            .args([
-                "--system",
-                "--print-reply",           // wait for reply and show it
-                &format!("--dest={}", dest),
-                path,
-                method,
-                &format!("string:{}", uuid),
-            ])
-            .output();
-
-        match out {
-            Ok(o) => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                eprintln!(
-                    "[fetcher]   exit={} | stdout: {} | stderr: {}",
-                    o.status,
-                    stdout.trim(),
-                    stderr.trim()
-                );
-
-                if o.status.success() {
-                    eprintln!(
-                        "[fetcher]   ✓ accepted by xochitl — dest={} path={} method={}",
-                        dest, path, method
-                    );
-                    return;
-                }
-            }
-            Err(e) => eprintln!("[fetcher]   exec error: {}", e),
+    match std::process::Command::new("dbus-send").args(&args).output() {
+        Ok(o) => {
+            let mut out = String::from_utf8_lossy(&o.stdout).to_string();
+            out.push_str(&String::from_utf8_lossy(&o.stderr));
+            out
         }
+        Err(e) => format!("exec error: {}", e),
     }
-
-    eprintln!(
-        "[fetcher] all D-Bus candidates exhausted — \
-         document will appear in library after next xochitl startup"
-    );
 }
 
-/// Extract the UUID stem from a full PDF path.
-///
-/// Example: `/home/root/.local/share/remarkable/xochitl/abc-123.pdf` → `abc-123`
+// ─────────────────────────────────────────────────────────────────────────────
+
 fn extract_uuid(path: &str) -> Option<String> {
     std::path::Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
     let send = |t: u32, s: &str| {
