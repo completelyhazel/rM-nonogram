@@ -110,6 +110,16 @@ Item {
             selected: 0
         }
 
+        Item { height: 4 }
+
+        Text {
+            Layout.alignment: Qt.AlignHCenter
+            text: "\"Tiny\" recommended"
+            font.pixelSize: 24
+            color: "#858585"
+        }
+
+
         Item { height: 40 }
 
         // difficulty
