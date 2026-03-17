@@ -1,12 +1,3 @@
-// AppLoad IPC — Unix socket (SOCK_SEQPACKET or SOCK_STREAM fallback)
-//
-// Protocol (SEQPACKET):
-//   Each logical message consists of TWO separate datagrams:
-//     Datagram 1 – header, exactly 8 bytes:
-//       [content_len : u32 LE][msg_type : u32 LE]
-//     Datagram 2 – content, content_len bytes of UTF-8 text
-//
-// SOCK_SEQPACKET guarantees message boundaries, so one recv() == one datagram.
 
 use std::io::{self, Write};
 use std::os::unix::io::FromRawFd;
@@ -33,7 +24,7 @@ pub struct Message {
     pub contents: String,
 }
 
-/// Fallback JSON wrapper used by some AppLoad versions / STREAM mode
+/// fallback JSON wrapper used by some AppLoad versions
 #[derive(Deserialize)]
 struct JsonMsg {
     #[serde(rename = "type")]
@@ -109,19 +100,10 @@ impl AppLoadConnection {
             SocketMode::Stream    => self.read_stream(),
         }
     }
-
-    // ── SEQPACKET receive ────────────────────────────────────────────────────
-    //
-    // AppLoad sends two datagrams per message:
-    //   [1] exactly 8 bytes: [content_len: u32 LE][msg_type: u32 LE]
-    //   [2] content_len bytes: raw UTF-8 content
-    //
-    // We receive [1], parse the header, then immediately receive [2].
-    // A single recv() reads exactly one datagram due to SEQPACKET semantics.
     fn read_seqpacket(&mut self) -> Result<Message, Box<dyn std::error::Error>> {
         let mut buf = vec![0u8; 65536];
 
-        // --- Receive first datagram (header or legacy single-datagram message) ---
+        // ---!!!!! receive first datagram (header or legacy single-datagram message) ---
         let n = unsafe {
             recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0)
         };
@@ -136,7 +118,6 @@ impl AppLoadConnection {
         }
         let n = n as usize;
 
-        // --- Two-datagram protocol: header is exactly 8 bytes ---
         if n == 8 {
             let content_len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
             let msg_type    = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
@@ -146,7 +127,7 @@ impl AppLoadConnection {
                 return Ok(Message { msg_type, contents: String::new() });
             }
 
-            // Receive second datagram (content)
+            // !!!! receive second datagram (content)
             let mut cbuf = vec![0u8; content_len.min(65536)];
             let cn = unsafe {
                 recv(self.fd, cbuf.as_mut_ptr() as *mut libc::c_void, cbuf.len(), 0)
@@ -166,16 +147,16 @@ impl AppLoadConnection {
             return Ok(Message { msg_type, contents });
         }
 
-        // --- Fallback: legacy single-datagram with JSON wrapper or raw content ---
+        // fallback
         let slice = &buf[..n];
         eprintln!("[fetcher] single datagram {n} bytes");
 
-        // Try JSON wrapper {"type": N, "contents": "..."}
+        // try JSON wrapper {"type": N, "contents": "..."}
         if let Ok(jm) = serde_json::from_slice::<JsonMsg>(slice) {
             return Ok(Message { msg_type: jm.msg_type, contents: jm.contents });
         }
 
-        // Last resort: raw text; detect type from content
+        // raw text n detect type from content as a last resort
         let contents = String::from_utf8_lossy(slice).trim().to_string();
         let msg_type = if contents.contains("type_bw") { 0 } else { 99 };
         Ok(Message { msg_type, contents })
@@ -194,11 +175,6 @@ impl AppLoadConnection {
         Ok(Message { msg_type: jm.msg_type, contents: jm.contents })
     }
 
-    // ── Send ─────────────────────────────────────────────────────────────────
-    //
-    // Send as two datagrams matching AppLoad's expected format:
-    //   Datagram 1: [content_len: u32 LE][msg_type: u32 LE]  (8 bytes)
-    //   Datagram 2: content as UTF-8                          (content_len bytes)
     pub fn send_message(
         &mut self,
         msg_type: u32,
