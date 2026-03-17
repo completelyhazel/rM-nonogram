@@ -119,8 +119,8 @@ impl AppLoadConnection {
         let n = n as usize;
 
         if n == 8 {
-            let content_len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-            let msg_type    = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+            let msg_type    = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            let content_len = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
 
             if content_len == 0 {
                 eprintln!("[fetcher] received type={msg_type} (empty content)");
@@ -182,8 +182,8 @@ impl AppLoadConnection {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let c_bytes = contents.as_bytes();
         let mut header = [0u8; 8];
-        header[0..4].copy_from_slice(&(c_bytes.len() as u32).to_le_bytes());
-        header[4..8].copy_from_slice(&msg_type.to_le_bytes());
+        header[0..4].copy_from_slice(&msg_type.to_le_bytes());
+        header[4..8].copy_from_slice(&(c_bytes.len() as u32).to_le_bytes());
 
         eprintln!(
             "[fetcher] send type={msg_type} len={} contents={:?}",
