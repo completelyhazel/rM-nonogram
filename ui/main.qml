@@ -13,65 +13,24 @@ Item {
         endpoint.terminate()
     }
 
-    // ── Auto-close after a successful fetch ───────────────────────────────────
-    //
-    // Fires a few seconds after the backend reports success.  By then xochitl
-    // has already received the D-Bus openDocumentRequest, so dismissing the
-    // AppLoad overlay drops the user straight into the puzzle.
-    Timer {
-        id: closeTimer
-        interval: 3500   // ms — enough for xochitl to open the document
-        repeat: false
-        onTriggered: root.close()
-    }
-
-    // Countdown text displayed in the status area while closeTimer runs
-    Timer {
-        id: countdownTimer
-        interval: 1000
-        repeat: true
-        property int remaining: 0
-        onTriggered: {
-            remaining -= 1
-            if (remaining <= 0) {
-                countdownTimer.stop()
-            } else {
-                statusText.text = successMessage + "\n\nOpening in " + remaining + "…"
-            }
-        }
-    }
-
-    property string successMessage: ""
-
     AppLoad {
         id: endpoint
         applicationID: "com.nonogram.fetcher"
 
         onMessageReceived: (type, contents) => {
             if (type === 1) {
-                // Backend has saved the PDF and sent a D-Bus open request.
-                // Show a brief confirmation, then close so the user lands on
-                // the freshly-opened document.
-                var docName = contents.replace("SAVED:", "")
-                                      .split("/").pop()        // filename only
-                                      .replace(".pdf", "")
-                root.successMessage = "✓  Saved to library"
-
+                // PDF saved — the backend will restart xochitl in ~2 s,
+                // which will also close this overlay automatically.
                 statusText.color = "#1a6b1a"
-                statusText.text  = root.successMessage + "\n\nOpening in 3…"
-
-                fetchButton.enabled    = false
-                countdownTimer.remaining = 3
-                countdownTimer.start()
-                closeTimer.start()
+                statusText.text  = "✓  Saved!\n\nRestarting library…"
+                fetchButton.enabled = false
 
             } else if (type === 2) {
-                statusText.color = "#cc2200"
-                statusText.text  = "Error: " + contents
+                statusText.color    = "#cc2200"
+                statusText.text     = "Error: " + contents
                 fetchButton.enabled = true
 
             } else if (type === 3) {
-                // Progress update from the worker thread
                 statusText.color = "#555555"
                 statusText.text  = contents
             }
@@ -217,7 +176,6 @@ Item {
 
         Item { height: 40 }
 
-        // Status / progress / success text
         Text {
             id: statusText
             Layout.alignment: Qt.AlignHCenter
@@ -231,7 +189,6 @@ Item {
 
         Item { height: 60 }
 
-        // Manual close link — always visible so the user can bail out early
         Text {
             Layout.alignment: Qt.AlignHCenter
             text: "Close"
@@ -240,11 +197,7 @@ Item {
 
             MouseArea {
                 anchors.fill: parent
-                onClicked: {
-                    closeTimer.stop()
-                    countdownTimer.stop()
-                    root.close()
-                }
+                onClicked: root.close()
             }
         }
 
