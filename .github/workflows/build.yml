@@ -56,7 +56,7 @@ jobs:
         with:
           files: dist/nonogram-fetcher.tar.gz
           body: |
-            ## Instalation
+            ## Installation
             run da followin command:
 
             ```
