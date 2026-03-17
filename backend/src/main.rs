@@ -16,9 +16,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Dump everything we can find on D-Bus and identify xochitl's PID so that
-    // notify_xochitl() has the best possible information to work with.
-    dbus_introspect_all();
+    // Introspect /Synchronizer on no.remarkable.sync — the one object path
+    // we haven't explored yet, revealed by the previous run's introspection.
+    dbus_introspect_synchronizer();
 
     let socket_path = &args[1];
     eprintln!("[fetcher] connecting to socket: {}", socket_path);
@@ -115,50 +115,82 @@ fn main() {
     eprintln!("[fetcher] exiting.");
 }
 
-// ── Notification strategy ─────────────────────────────────────────────────────
-//
-// We try every known mechanism in order.  Each attempt is logged so the
-// journal tells us exactly which one xochitl responded to.
+// ── D-Bus ─────────────────────────────────────────────────────────────────────
 
-fn notify_xochitl(full_path: &str, uuid: &str) {
-    // 1. Try every D-Bus service we actually found on the bus.
-    try_dbus_sync(full_path, uuid);
+/// Introspect /Synchronizer on no.remarkable.sync and dump every method.
+///
+/// The previous run showed `<node name="Synchronizer"/>` as a child of `/` —
+/// that child object is what this firmware uses for sync/document operations.
+fn dbus_introspect_synchronizer() {
+    eprintln!("[dbus] ── introspecting no.remarkable.sync /Synchronizer ──");
 
-    // 2. Send SIGUSR1 / SIGUSR2 to xochitl — some firmware versions use these
-    //    as a "rescan library" or "open file" signal.
-    try_signals_to_xochitl(uuid);
+    // Also try the full reverse-DNS path just in case.
+    for path in &["/Synchronizer", "/no/remarkable/sync/Synchronizer"] {
+        let xml = dbus_call(
+            "no.remarkable.sync",
+            path,
+            "org.freedesktop.DBus.Introspectable.Introspect",
+            &[],
+        );
+
+        if xml.trim().is_empty()
+            || xml.contains("UnknownObject")
+            || xml.contains("ServiceUnknown")
+        {
+            eprintln!("[dbus]   {} → not found or empty", path);
+            continue;
+        }
+
+        eprintln!("[dbus]   {} →", path);
+        for line in xml.lines() {
+            let t = line.trim();
+            if t.starts_with("<node")
+                || t.starts_with("<interface")
+                || t.starts_with("<method")
+                || t.starts_with("<signal")
+                || t.starts_with("<property")
+                || t.starts_with("<arg")
+            {
+                eprintln!("[dbus]     {}", t);
+            }
+        }
+    }
+
+    eprintln!("[dbus] ────────────────────────────────────────────────────────");
 }
 
-/// Try methods on the services that are actually present on this device.
-fn try_dbus_sync(full_path: &str, uuid: &str) {
-    // (dest, object_path, method, arg_type, arg_value)
-    // arg_type: "string" | "path" | ""  (empty = no argument)
+/// Try to trigger a library refresh / document open via D-Bus only.
+///
+/// NO signals are sent — SIGUSR1 disrupts the digitizer and SIGUSR2 kills
+/// xochitl on this firmware (confirmed by the previous run's crash).
+fn notify_xochitl(full_path: &str, uuid: &str) {
+    // Candidates on /Synchronizer — the only real object no.remarkable.sync exposes.
+    // (dest, object_path, interface.method, arg_type, arg_value)
     let candidates: &[(&str, &str, &str, &str, &str)] = &[
-        // no.remarkable.sync — try every plausible method name
-        ("no.remarkable.sync", "/",
+        // Try the most plausible method names on /Synchronizer
+        ("no.remarkable.sync", "/Synchronizer",
+            "no.remarkable.sync.Synchronizer.openDocument", "string", uuid),
+        ("no.remarkable.sync", "/Synchronizer",
+            "no.remarkable.sync.Synchronizer.openDocumentRequest", "string", uuid),
+        ("no.remarkable.sync", "/Synchronizer",
+            "no.remarkable.sync.Synchronizer.openFile", "string", full_path),
+        ("no.remarkable.sync", "/Synchronizer",
+            "no.remarkable.sync.Synchronizer.refresh", "", ""),
+        ("no.remarkable.sync", "/Synchronizer",
+            "no.remarkable.sync.Synchronizer.rescan", "", ""),
+        ("no.remarkable.sync", "/Synchronizer",
+            "no.remarkable.sync.Synchronizer.fileAdded", "string", full_path),
+        ("no.remarkable.sync", "/Synchronizer",
+            "no.remarkable.sync.Synchronizer.documentAdded", "string", uuid),
+        // Interface name might just be "no.remarkable.sync" without the subpath
+        ("no.remarkable.sync", "/Synchronizer",
             "no.remarkable.sync.openDocument", "string", uuid),
-        ("no.remarkable.sync", "/",
-            "no.remarkable.sync.openDocumentRequest", "string", uuid),
-        ("no.remarkable.sync", "/",
-            "no.remarkable.sync.openFile", "string", full_path),
-        ("no.remarkable.sync", "/",
+        ("no.remarkable.sync", "/Synchronizer",
+            "no.remarkable.sync.refresh", "", ""),
+        ("no.remarkable.sync", "/Synchronizer",
             "no.remarkable.sync.rescan", "", ""),
-        ("no.remarkable.sync", "/",
-            "no.remarkable.sync.refreshLibrary", "", ""),
-        ("no.remarkable.sync", "/",
+        ("no.remarkable.sync", "/Synchronizer",
             "no.remarkable.sync.fileAdded", "string", full_path),
-        ("no.remarkable.sync", "/",
-            "no.remarkable.sync.documentAdded", "string", uuid),
-        // Same names under /no/remarkable/sync path
-        ("no.remarkable.sync", "/no/remarkable/sync",
-            "no.remarkable.sync.openDocument", "string", uuid),
-        ("no.remarkable.sync", "/no/remarkable/sync",
-            "no.remarkable.sync.rescan", "", ""),
-        ("no.remarkable.sync", "/no/remarkable/sync",
-            "no.remarkable.sync.fileAdded", "string", full_path),
-        // no.remarkable.marker (pen service — unlikely, but log what it exposes)
-        ("no.remarkable.marker", "/",
-            "no.remarkable.marker.openDocument", "string", uuid),
     ];
 
     for (dest, path, method, arg_type, arg_val) in candidates {
@@ -179,8 +211,12 @@ fn try_dbus_sync(full_path: &str, uuid: &str) {
             Ok(o) => {
                 let out = String::from_utf8_lossy(&o.stdout);
                 let err = String::from_utf8_lossy(&o.stderr);
-                eprintln!("[dbus]   exit={} stdout={:?} stderr={:?}",
-                    o.status, out.trim(), err.trim());
+                eprintln!(
+                    "[dbus]   exit={} stdout={:?} stderr={:?}",
+                    o.status,
+                    out.trim(),
+                    err.trim()
+                );
                 if o.status.success() {
                     eprintln!("[dbus]   ✓ accepted — {} {} {}", dest, path, method);
                     return;
@@ -189,119 +225,15 @@ fn try_dbus_sync(full_path: &str, uuid: &str) {
             Err(e) => eprintln!("[dbus]   exec error: {}", e),
         }
     }
-}
 
-/// Send SIGUSR1 then SIGUSR2 to every xochitl process we can find.
-/// On some firmware SIGUSR1 triggers a library rescan.
-/// On some firmware SIGUSR2 opens the last-modified document.
-fn try_signals_to_xochitl(uuid: &str) {
-    let pids = find_xochitl_pids();
-    if pids.is_empty() {
-        eprintln!("[signal] no xochitl PIDs found");
-        return;
-    }
-
-    for pid in &pids {
-        eprintln!("[signal] sending SIGUSR1 to xochitl PID {}", pid);
-        let _ = std::process::Command::new("kill")
-            .args(["-SIGUSR1", pid])
-            .status();
-
-        // Small gap so xochitl processes SIGUSR1 before receiving SIGUSR2.
-        std::thread::sleep(std::time::Duration::from_millis(200));
-
-        eprintln!("[signal] sending SIGUSR2 to xochitl PID {}", pid);
-        let _ = std::process::Command::new("kill")
-            .args(["-SIGUSR2", pid])
-            .status();
-    }
-
-    // Give xochitl a moment to pick up the new file after the signal.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    eprintln!("[signal] done — check if document {} appeared", uuid);
-}
-
-/// Return a list of PIDs whose command name is "xochitl".
-fn find_xochitl_pids() -> Vec<String> {
-    // Try pidof first (faster), fall back to scanning /proc manually.
-    let pidof = std::process::Command::new("pidof")
-        .arg("xochitl")
-        .output();
-
-    if let Ok(o) = pidof {
-        if o.status.success() {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            let pids: Vec<String> = stdout
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
-            eprintln!("[signal] xochitl PIDs (pidof): {:?}", pids);
-            return pids;
-        }
-    }
-
-    // Fall back: read /proc/*/comm
-    let mut pids = Vec::new();
-    if let Ok(entries) = std::fs::read_dir("/proc") {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.chars().all(|c| c.is_ascii_digit()) {
-                let comm_path = format!("/proc/{}/comm", name_str);
-                if let Ok(comm) = std::fs::read_to_string(&comm_path) {
-                    if comm.trim() == "xochitl" {
-                        pids.push(name_str.to_string());
-                    }
-                }
-            }
-        }
-    }
-    eprintln!("[signal] xochitl PIDs (/proc scan): {:?}", pids);
-    pids
-}
-
-// ── D-Bus introspection at startup ────────────────────────────────────────────
-
-fn dbus_introspect_all() {
-    eprintln!("[dbus] ── full system bus introspection ──────────────────────");
-
-    // Print every service name — look for anything remarkable/xochitl related.
-    let names = dbus_call(
-        "org.freedesktop.DBus", "/org/freedesktop/DBus",
-        "org.freedesktop.DBus.ListNames", &[],
+    eprintln!(
+        "[dbus] all candidates exhausted — \
+         document will appear in library after next xochitl startup"
     );
-    eprintln!("[dbus] all bus names:\n{}", names.trim());
-
-    // Fully introspect the services we know exist.
-    for dest in &["no.remarkable.sync", "no.remarkable.marker", "com.remarkable.devicepolicy"] {
-        eprintln!("[dbus] ── introspecting {} ──", dest);
-
-        // Try root object first, then guessed sub-paths.
-        for path in &["/", &format!("/{}", dest.replace('.', "/"))] {
-            let xml = dbus_call(dest, path, "org.freedesktop.DBus.Introspectable.Introspect", &[]);
-            if xml.trim().is_empty() || xml.contains("ServiceUnknown") || xml.contains("error") {
-                continue;
-            }
-            eprintln!("[dbus]   path {} :", path);
-            for line in xml.lines() {
-                let t = line.trim();
-                if t.starts_with("<node")
-                    || t.starts_with("<interface")
-                    || t.starts_with("<method")
-                    || t.starts_with("<signal")
-                    || t.starts_with("<property")
-                    || t.starts_with("<arg")
-                {
-                    eprintln!("[dbus]     {}", t);
-                }
-            }
-        }
-    }
-
-    eprintln!("[dbus] ────────────────────────────────────────────────────────");
 }
 
-/// Run dbus-send --print-reply and return stdout + stderr as a single string.
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 fn dbus_call(dest: &str, path: &str, method: &str, extra: &[&str]) -> String {
     let mut args = vec![
         "--system".to_string(),
@@ -322,14 +254,14 @@ fn dbus_call(dest: &str, path: &str, method: &str, extra: &[&str]) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-
 fn extract_uuid(path: &str) -> Option<String> {
     std::path::Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
     let send = |t: u32, s: &str| {
