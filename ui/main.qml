@@ -109,7 +109,7 @@ Item {
 
         OptionRow {
             id: sizeSelector
-            model: ["5×5", "10×10", "15×15", "20×20", "25×25"]
+            model: ["XSmall", "Small", "Medium", "Large", "XLarge"]
             selected: 1
         }
 

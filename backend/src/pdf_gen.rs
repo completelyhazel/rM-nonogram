@@ -1,6 +1,6 @@
 // PDF generation: embed the nonogram print-page image into an A4 PDF,
-// add a title header and puzzle-ID footer, write xochitl sidecar files,
-// generate a thumbnail, and signal xochitl to rescan its library.
+// write xochitl sidecar files (.metadata, .content, .thumbnails/),
+// and signal xochitl to rescan its library.
 
 use printpdf::*;
 use ::image::codecs::png::PngDecoder;
@@ -9,11 +9,11 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 use crate::nonogram::NonogramInfo;
 
-const PAGE_W:    f64 = 210.0; // A4 mm
-const PAGE_H:    f64 = 297.0;
-const MARGIN:    f64 = 12.0;
-const HEADER_H:  f64 = 14.0;  // space above image for title
-const FOOTER_H:  f64 = 10.0;  // space below image for puzzle-ID
+const PAGE_W:   f64 = 210.0; // A4 width  (mm)
+const PAGE_H:   f64 = 297.0; // A4 height (mm)
+const MARGIN:   f64 = 12.0;
+const HEADER_H: f64 = 14.0;  // reserved above the image for the title
+const FOOTER_H: f64 = 10.0;  // reserved below the image for the puzzle ID
 
 pub fn generate_pdf(
     info:       &NonogramInfo,
@@ -28,29 +28,30 @@ pub fn generate_pdf(
     };
     eprintln!("[pdf] image {}x{} px", img_w_px, img_h_px);
 
-    // ── Scale image to fill available area (preserve aspect ratio) ────────────
+    // ── Scale the image to fill the available area (preserve aspect ratio) ────
     let avail_w = PAGE_W - 2.0 * MARGIN;
     let avail_h = PAGE_H - 2.0 * MARGIN - HEADER_H - FOOTER_H;
 
-    let scale = (avail_w / img_w_px as f64).min(avail_h / img_h_px as f64);
+    let scale  = (avail_w / img_w_px as f64).min(avail_h / img_h_px as f64);
     let draw_w = img_w_px as f64 * scale;
     let draw_h = img_h_px as f64 * scale;
 
+    // Center horizontally; printpdf uses Y=0 at the bottom of the page.
     let img_x = MARGIN + (avail_w - draw_w) / 2.0;
-    // printpdf: Y=0 is bottom of page
     let img_y = PAGE_H - MARGIN - HEADER_H - draw_h;
 
-    // ── Build PDF ─────────────────────────────────────────────────────────────
+    // ── Build the PDF ─────────────────────────────────────────────────────────
     let (doc, page1, layer1) = PdfDocument::new(
         &info.title,
-        Mm(PAGE_W), Mm(PAGE_H),
+        Mm(PAGE_W),
+        Mm(PAGE_H),
         "Layer 1",
     );
     let layer    = doc.get_page(page1).get_layer(layer1);
     let font     = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
     let font_reg = doc.add_builtin_font(BuiltinFont::Helvetica)?;
 
-    // Title
+    // Title header
     layer.use_text(
         &info.title,
         13.0,
@@ -59,7 +60,7 @@ pub fn generate_pdf(
         &font,
     );
 
-    // Image — use reference DPI of 96; compute scale so rendered size == draw_w/h
+    // Compute the printpdf scale factors from a reference DPI of 96.
     let dpi          = 96.0_f64;
     let natural_w_mm = img_w_px as f64 / dpi * 25.4;
     let natural_h_mm = img_h_px as f64 / dpi * 25.4;
@@ -78,7 +79,7 @@ pub fn generate_pdf(
         ..Default::default()
     });
 
-    // Footer
+    // Footer with puzzle source and ID (useful for checking the solution online)
     layer.set_fill_color(Color::Rgb(Rgb::new(0.5, 0.5, 0.5, None)));
     layer.use_text(
         &format!("nonograms.org  |  puzzle #{}", info.id),
@@ -88,16 +89,16 @@ pub fn generate_pdf(
         &font_reg,
     );
 
-    // ── Write files ───────────────────────────────────────────────────────────
+    // ── Write files to disk ───────────────────────────────────────────────────
     let uuid = gen_uuid();
     let base  = PathBuf::from(output_dir);
     fs::create_dir_all(&base)?;
 
-    // PDF
+    // Main PDF file
     let pdf_path = base.join(format!("{}.pdf", uuid));
     doc.save(&mut BufWriter::new(fs::File::create(&pdf_path)?))?;
 
-    // .metadata
+    // .metadata — required by xochitl to index the document
     let ts           = now_ms();
     let visible_name = info.title.replace('"', "\\\"");
     let metadata = format!(
@@ -105,30 +106,32 @@ pub fn generate_pdf(
     );
     fs::write(base.join(format!("{}.metadata", uuid)), &metadata)?;
 
-    // .content
+    // .content — required by xochitl to know the file type
     let content = r#"{"dummyDocument":false,"extraMetadata":{},"fileType":"pdf","fontName":"","lastOpenedPage":0,"legacyEpub":false,"lineHeight":-1,"margins":180,"pageCount":1,"pages":[],"redirectionPageMap":[],"sizeInBytes":"0","tags":[],"textAlignment":"left","textScale":1,"transform":{}}"#;
     fs::write(base.join(format!("{}.content", uuid)), content)?;
 
-    // .thumbnails/0.png  — xochitl requires this to show the document in the library
+    // .thumbnails/0.png — xochitl shows this as the document preview icon.
+    // Reuse the puzzle image; it's already an appropriate size (~300 px wide).
     let thumb_dir = base.join(format!("{}.thumbnails", uuid));
     fs::create_dir_all(&thumb_dir)?;
-    // Reuse the original image as thumbnail — already ~300px wide, which is fine
     fs::write(thumb_dir.join("0.png"), &info.image_bytes)?;
 
     eprintln!("[pdf] saved {}.pdf", uuid);
 
-    // ── Signal xochitl to rescan its document library ─────────────────────────
-    // SIGHUP causes xochitl to reload without a full restart.
-    let _ = std::process::Command::new("sh")
-        .args(["-c", "kill -HUP $(pidof xochitl) 2>/dev/null || true"])
-        .spawn();
-    eprintln!("[pdf] sent SIGHUP to xochitl");
+    // NOTE: Do NOT send SIGHUP to xochitl here.
+    // On reMarkable Paper Pro firmware (imx8mm), SIGHUP terminates xochitl
+    // entirely instead of triggering a library reload, which kills the AppLoad
+    // session and freezes the UI mid-use.
+    // The new document will appear in the library on the next normal xochitl
+    // startup (e.g. after the user exits AppLoad).
+    eprintln!("[pdf] skipping xochitl notify (SIGHUP kills xochitl on this firmware)");
 
     Ok(pdf_path.to_string_lossy().to_string())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Current Unix time in milliseconds (for xochitl metadata timestamps).
 fn now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -136,6 +139,8 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+/// Generate a v4-ish UUID from the current nanosecond timestamp.
+/// Not cryptographically random, but unique enough for a document filename.
 fn gen_uuid() -> String {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

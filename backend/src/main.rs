@@ -3,6 +3,7 @@ mod nonogram;
 mod pdf_gen;
 
 use std::env;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use appload::AppLoadConnection;
@@ -32,14 +33,21 @@ fn main() {
     let (tx, rx) = mpsc::channel::<(u32, String)>();
 
     // Handle to the currently active download worker (at most one at a time).
-    // Kept so we can join it on exit and ensure the PDF is fully saved even if
-    // AppLoad closes the socket before the download finishes.
     let mut active_worker: Option<JoinHandle<()>> = None;
+
+    // Set to true by the worker when a PDF is successfully saved.
+    // Read after the socket closes to decide whether to restart xochitl.
+    let pdf_was_saved = Arc::new(AtomicBool::new(false));
 
     loop {
         // Drain any pending responses from the worker (non-blocking).
         while let Ok((t, s)) = rx.try_recv() {
             eprintln!("[fetcher] forwarding type={} to frontend", t);
+            if t == 1 {
+                // Worker confirmed a successful save — flag it so we can
+                // restart xochitl once the user has closed the app.
+                pdf_was_saved.store(true, Ordering::SeqCst);
+            }
             let _ = conn.send_message(t, &s);
         }
 
@@ -56,15 +64,16 @@ fn main() {
                                 req.type_bw, req.size, req.difficulty
                             );
 
-                            // If a previous fetch is somehow still running, wait for it
-                            // before starting a new one to avoid overloading the device.
+                            // Wait for any previous fetch before starting a new one.
                             if let Some(prev) = active_worker.take() {
                                 let _ = prev.join();
                             }
 
-                            let tx2 = tx.clone();
-                            active_worker =
-                                Some(std::thread::spawn(move || handle_fetch(tx2, req)));
+                            let tx2  = tx.clone();
+                            let flag = Arc::clone(&pdf_was_saved);
+                            active_worker = Some(std::thread::spawn(move || {
+                                handle_fetch(tx2, req, flag);
+                            }));
                         }
                         Err(e) => {
                             eprintln!("[fetcher] failed to parse request: {}", e);
@@ -80,14 +89,12 @@ fn main() {
             Err(e) => {
                 let s = e.to_string();
                 if s == "timeout" {
-                    // Normal: no message arrived within recv timeout, loop again.
                     continue;
                 }
                 if s.contains("expected value")
                     || s.contains("invalid type")
                     || s.contains("trailing")
                 {
-                    // JSON noise on non-message datagrams — harmless, keep going.
                     continue;
                 }
                 eprintln!("[fetcher] socket closed or error: {}", s);
@@ -98,22 +105,35 @@ fn main() {
 
     // ── Graceful shutdown ─────────────────────────────────────────────────────
     //
-    // The socket is gone (AppLoad called terminate() or the user closed the app),
-    // but we MUST NOT exit until the active download worker finishes.
-    // If we exited now the PDF would be left half-written or not written at all.
+    // The socket is gone — the user has left AppLoad.
+    // Wait for any active download to finish writing its PDF before we exit
+    // or restart xochitl, so the file is guaranteed to be complete on disk.
     if let Some(handle) = active_worker {
-        eprintln!("[fetcher] socket closed while a download is in progress — waiting for it to finish...");
+        eprintln!("[fetcher] socket closed while download in progress — waiting...");
         let _ = handle.join();
-        eprintln!("[fetcher] download finished, exiting.");
+        eprintln!("[fetcher] download finished.");
     }
+
+    // Restart xochitl only if we actually saved a new document.
+    // By this point AppLoad has already terminated our session, so restarting
+    // xochitl is safe and is the correct way to force it to index new files.
+    if pdf_was_saved.load(Ordering::SeqCst) {
+        eprintln!("[fetcher] restarting xochitl to pick up new document...");
+        let _ = std::process::Command::new("systemctl")
+            .args(["restart", "xochitl"])
+            .spawn();
+    }
+
+    eprintln!("[fetcher] exiting.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
-    // Helper: send a typed message back to the main loop (and on to the frontend).
-    // Silently ignores send errors — the main loop may have already exited if
-    // AppLoad closed the socket, but we still complete the download and save.
+fn handle_fetch(
+    tx:       mpsc::Sender<(u32, String)>,
+    req:      FetchRequest,
+    pdf_flag: Arc<AtomicBool>,
+) {
     let send = |t: u32, s: &str| {
         eprintln!("[worker] type={}: {}", t, s);
         let _ = tx.send((t, s.to_string()));
@@ -122,15 +142,9 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
     send(3, "Searching for nonograms...");
 
     let ids = match nonogram::search_nonograms(&req) {
-        Ok(v) if v.is_empty() => {
-            send(2, "No puzzles found.");
-            return;
-        }
-        Ok(v) => v,
-        Err(e) => {
-            send(2, &format!("Search error: {}", e));
-            return;
-        }
+        Ok(v) if v.is_empty() => { send(2, "No puzzles found."); return; }
+        Ok(v)  => v,
+        Err(e) => { send(2, &format!("Search error: {}", e)); return; }
     };
 
     eprintln!("[worker] {} puzzle IDs found", ids.len());
@@ -151,17 +165,11 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
             let id = ids[(base + attempt) % ids.len()];
             send(3, &format!("Downloading puzzle #{}...", id));
             match nonogram::fetch_nonogram(id, req.type_bw) {
-                Ok(p) => {
-                    result = Some(p);
-                    break;
-                }
+                Ok(p) => { result = Some(p); break; }
                 Err(e) => {
                     eprintln!(
                         "[worker] puzzle #{} failed (attempt {}/{}): {}",
-                        id,
-                        attempt + 1,
-                        attempts,
-                        e
+                        id, attempt + 1, attempts, e
                     );
                     if attempt + 1 < attempts {
                         send(3, &format!("Puzzle #{} unavailable, trying another...", id));
@@ -171,10 +179,7 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
         }
         match result {
             Some(p) => p,
-            None => {
-                send(2, "Could not download any puzzle after multiple attempts.");
-                return;
-            }
+            None => { send(2, "Could not download any puzzle after multiple attempts."); return; }
         }
     };
 
@@ -182,7 +187,12 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
 
     let dir = "/home/root/.local/share/remarkable/xochitl";
     match pdf_gen::generate_pdf(&info, dir) {
-        Ok(path) => send(1, &format!("SAVED:{}", path)),
+        Ok(path) => {
+            // Set the flag BEFORE sending type=1 so the main loop sees it
+            // even if the frontend closes immediately after receiving the message.
+            pdf_flag.store(true, Ordering::SeqCst);
+            send(1, &format!("SAVED:{}", path));
+        }
         Err(e) => send(2, &format!("PDF error: {}", e)),
     }
 }
