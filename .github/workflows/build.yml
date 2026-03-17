@@ -1,4 +1,4 @@
-name: Build para reMarkable Paper Pro
+name: rMPP build
 
 on:
   push:
@@ -14,34 +14,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout código
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Instalar Rust
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-musl
 
-      - name: Instalar dependencias
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu qt6-base-dev
 
-      - name: Compilar backend
+      - name: Compile backend
         working-directory: backend
         run: cargo build --release --target aarch64-unknown-linux-musl
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
 
-      - name: Compilar recursos QML (Qt6)
+      - name: Compile QML
         working-directory: ui
         run: |
-          # Qt6 instala rcc como rcc o como rcc6 según la distro
           RCC=$(which rcc6 2>/dev/null || which rcc 2>/dev/null || find /usr/lib/qt6 -name "rcc" -type f 2>/dev/null | head -1)
-          echo "Usando: $RCC ($($RCC --version 2>&1 | head -1))"
+          echo "Using: $RCC ($($RCC --version 2>&1 | head -1))"
           $RCC -binary application.qrc -o ../resources.rcc
 
-      - name: Empaquetar app
+      - name: Pack app
         run: |
           mkdir -p dist/nonogram-fetcher/backend
           cp manifest.json dist/nonogram-fetcher/
@@ -51,23 +50,20 @@ jobs:
           [ -f icon.png ] && cp icon.png dist/nonogram-fetcher/ || true
           cd dist && tar -czf nonogram-fetcher.tar.gz nonogram-fetcher/
 
-      - name: Publicar GitHub Release
+      - name: Post GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: dist/nonogram-fetcher.tar.gz
           body: |
-            ## Instalación
-
-            Conecta el reMarkable por WiFi, activa SSH y ejecuta:
+            ## Instalation
+            run da followin command:
 
             ```
             curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/nonogram-fetcher.tar.gz -o /tmp/nonogram.tar.gz && tar -xz -C /home/root/xovi/exthome/appload/ -f /tmp/nonogram.tar.gz
             ```
 
-            Reinicia xochitl y la app aparecerá en AppLoad.
-
-      - name: Subir artefacto (builds manuales)
+      - name: Post artifact
         uses: actions/upload-artifact@v4
         with:
           name: nonogram-fetcher-rmpp
