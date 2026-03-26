@@ -47,8 +47,8 @@ fn main() {
                     match serde_json::from_str::<FetchRequest>(&msg.contents) {
                         Ok(req) => {
                             eprintln!(
-                                "[fetcher] fetch request: bw={} size={} difficulty={}",
-                                req.type_bw, req.size, req.difficulty
+                                "[fetcher] fetch request: bw={} max={} min={}",
+                               req.type_bw, req.max_size, req.min_size
                             );
                             if let Some(prev) = active_worker.take() {
                                 let _ = prev.join();
