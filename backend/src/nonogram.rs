@@ -4,9 +4,10 @@ use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct FetchRequest {
-    pub type_bw:    bool,
-    pub size:       String,   // "5", "10", "15", "20", "25"
-    pub difficulty: u32,      // 0=any
+    pub type_bw: bool,
+    pub min_size: u8,
+    pub max_size: u8,
+    pub five_multiple: bool,
 }
 
 pub struct NonogramInfo {
@@ -15,24 +16,18 @@ pub struct NonogramInfo {
     pub image_bytes: Vec<u8>,
 }
 
+const SEARCH_URL: &str = "https://www.nonograms.org/search";
+
 pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    let base = if req.type_bw {
-        "https://www.nonograms.org/nonograms"
-    } else {
-        "https://www.nonograms.org/nonograms2"
-    };
-
-    let size_path = match req.size.as_str() {
-        "5"  => "/size/xsmall",
-        "10" => "/size/small",
-        "15" => "/size/medium",
-        "20" => "/size/large",
-        "25" => "/size/xlarge",
-        _    => "",
-    };
-
     // get page 1 to get the max page amount
-    let first_url = format!("{}{}/p/1", base, size_path);
+    let search_params = format!("?name=&colors={}&width_min={}&width_max={}&height_min={}&height_max={}{}",
+        if req.type_bw {"1"} else {"2"},
+        req.min_size, req.max_size, req.min_size, req.max_size,
+        if req.five_multiple {"&size5=1"} else {""}
+    );
+
+    let first_url: String = format!("{SEARCH_URL}{search_params}");
+
     eprintln!("[nonogram] fetching page 1 to count pages: {}", first_url);
     let first_body = fetch_html(&first_url)?;
 
@@ -54,7 +49,7 @@ pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::err
     let body = if page == 1 {
         first_body
     } else {
-        let url = format!("{}{}/p/{}", base, size_path, page);
+        let url = format!("{}/p/{}{}", SEARCH_URL, page, search_params);
         eprintln!("[nonogram] fetching page: {}", url);
         fetch_html(&url)?
     };

@@ -96,7 +96,7 @@ Item {
         // grid size
         Text {
             Layout.alignment: Qt.AlignLeft
-            text: "Grid Size"
+            text: "Max Size"
             font.pixelSize: 28
             color: "#555555"
             font.weight: Font.Medium
@@ -104,28 +104,40 @@ Item {
 
         Item { height: 16 }
 
-        OptionRow {
-            id: sizeSelector
-            model: ["Tiny", "Small", "Medium", "Large", "Huge"]
-            selected: 0
+        Slider {
+            from: 1
+            value: 15
+            to: 200
+            stepSize: 5
+            snapMode: Slider.SnapAlways
+            id: maxSize
         }
-
-        Item { height: 4 }
 
         Text {
-            Layout.alignment: Qt.AlignHCenter
-            text: "\"Tiny\" recommended"
-            font.pixelSize: 26
-            color: "#6e6e6e"
+            Layout.alignment: Qt.AlignLeft
+            text: "Min Size"
+            font.pixelSize: 28
+            color: "#555555"
+            font.weight: Font.Medium
         }
 
+        Item { height: 16 }
+
+        Slider {
+            from: 1
+            value: 15
+            to: 200
+            stepSize: 1
+            snapMode: Slider.SnapAlways
+            id: minSize
+        }
 
         Item { height: 40 }
 
-        // difficulty
+        // Force 5x5
         Text {
             Layout.alignment: Qt.AlignLeft
-            text: "Difficulty"
+            text: "Width/height multiple of 5"
             font.pixelSize: 28
             color: "#555555"
             font.weight: Font.Medium
@@ -133,10 +145,10 @@ Item {
 
         Item { height: 16 }
 
-        OptionRow {
-            id: diffSelector
-            model: ["Any", "Easy", "Medium", "Hard"]
-            selected: 0
+       CheckBox {
+            font.pixelSize: 24
+            text: qsTr("5-multiple size")
+            id: fiveMultiple
         }
 
         Item { height: 70 }
@@ -169,11 +181,11 @@ Item {
                 anchors.fill: parent
                 enabled: fetchButton.enabled
                 onClicked: {
-                    var sizeMap = ["5", "10", "15", "20", "25"]
                     var payload = JSON.stringify({
                         type_bw:    typeSelector.selected === 0,
-                        size:       sizeMap[sizeSelector.selected],
-                        difficulty: diffSelector.selected
+                        min_size:   minSize.value,
+                        max_size:   maxSize.value,
+                        five_multiple: fiveMultiple.checkState === Qt.Checked
                     })
                     fetchButton.enabled = false
                     statusText.color    = "#555555"
