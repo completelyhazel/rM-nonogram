@@ -158,7 +158,8 @@ Item {
        CheckBox {
             font.pixelSize: 10
             scale: 3
-            text: qsTr("Force size to multiples of 5")
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("Restrict size to multiples of 5")
             id: fiveMultiple
         }
 
