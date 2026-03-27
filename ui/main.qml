@@ -107,8 +107,9 @@ Item {
 
         Slider {
             id: maxSize
+            Layout.fillWidth: true
             Layout.alignment: Qt.AlignHCenter
-            width: 300
+            Layout.maximumWidth: 400
             from: 5
             value: 15
             to: 200
@@ -136,8 +137,9 @@ Item {
 
         Slider {
             id: minSize
+            Layout.fillWidth: true
             Layout.alignment: Qt.AlignHCenter
-            width: 300
+            Layout.maximumWidth: 400
             from: 5
             value: 5
             to: 200
@@ -154,7 +156,8 @@ Item {
         // force 5x5
 
        CheckBox {
-            font.pixelSize: 28
+            font.pixelSize: 20
+            scale: 3
             text: qsTr("Force size to multiples of 5")
             id: fiveMultiple
         }
