@@ -106,18 +106,22 @@ Item {
         Item { height: 16 }
 
         Slider {
+            id: maxSize
+            Layout.fillWidth: true
+            Layout.preferredHeight: 80
             from: 1
             value: 15
             to: 200
             stepSize: 5
-            scale: 2.5
+            scale: 4
             snapMode: Slider.SnapAlways
-            id: maxSize
 
             onMoved: {
-                minText.text = "Max Size: " + maxSize.value
+               maxText.text = "Max Size: " + maxSize.value
             }
         }
+
+        Item { height: 16 }
 
         Text {
             Layout.alignment: Qt.AlignLeft
@@ -131,13 +135,15 @@ Item {
         Item { height: 16 }
 
         Slider {
-            from: 1
-            value: 15
-            to: 200
-            scale: 2.5
-            stepSize: 1
-            snapMode: Slider.SnapAlways
             id: minSize
+            Layout.fillWidth: true
+            Layout.preferredHeight: 80 
+            from: 1
+            value: 1
+            to: 200
+            scale: 4
+            stepSize: 5
+            snapMode: Slider.SnapAlways
             onMoved: {
                 minText.text = "Min Size: " + minSize.value
             }
@@ -146,18 +152,10 @@ Item {
         Item { height: 40 }
 
         // force 5x5
-        Text {
-            Layout.alignment: Qt.AlignLeft
-            text: "Width/height multiple of 5"
-            font.pixelSize: 28
-            color: "#555555"
-            font.weight: Font.Medium
-        }
-
-        Item { height: 16 }
 
        CheckBox {
-            font.pixelSize: 30
+            font.pixelSize: 24
+            scale: 2
             text: qsTr("Force size to multiples of 5")
             id: fiveMultiple
         }
