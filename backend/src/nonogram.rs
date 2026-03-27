@@ -76,11 +76,7 @@ fn parse_total_pages(html: &str) -> Option<usize> {
 }
 
 pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std::error::Error>> {
-    let print_url = if is_bw {
-        format!("https://www.nonograms.org/nonogramprint/i/{}", id)
-    } else {
-        format!("https://www.nonograms.org/nonogramprint2/i/{}", id)
-    };
+    let print_url = format!("https://www.nonograms.org/nonogramprint/i/{}", id);
 
     eprintln!("[nonogram] fetching print page: {}", print_url);
     let html = fetch_html(&print_url)?;
@@ -88,24 +84,6 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std:
 
     let doc = Html::parse_document(&html);
 
-    // title, try h1, h2, then <title> tag (print pages are minimal HTML)
-    // let title = ["h1", "h2", "h3"]
-    //     .iter()
-    //     .find_map(|sel| {
-    //         doc.select(&Selector::parse(sel).unwrap())
-    //             .next()
-    //             .map(|e| e.text().collect::<String>().trim().to_string())
-    //             .filter(|s| !s.is_empty())
-    //     })
-    //     .or_else(|| {
-    //         // Fall back to <title> tag, stripping common suffixes
-    //         doc.select(&Selector::parse("title").unwrap())
-    //             .next()
-    //             .map(|e| e.text().collect::<String>())
-    //             .map(|s| s.split('|').next().unwrap_or(&s).trim().to_string())
-    //             .filter(|s| !s.is_empty())
-    //     })
-    //     .unwrap_or_else(|| format!("Nonogram #{}", id));
     let title: String = format!("Nonogram #{}", id);
     eprintln!("[nonogram] title: {}", title);
 
