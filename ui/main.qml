@@ -109,7 +109,7 @@ Item {
             id: maxSize
             Layout.fillWidth: true
             Layout.alignment: Qt.AlignHCenter
-            Layout.maximumWidth: 400
+            Layout.maximumWidth: 300
             from: 5
             value: 15
             to: 200
@@ -139,7 +139,7 @@ Item {
             id: minSize
             Layout.fillWidth: true
             Layout.alignment: Qt.AlignHCenter
-            Layout.maximumWidth: 400
+            Layout.maximumWidth: 300
             from: 5
             value: 5
             to: 200
@@ -156,7 +156,7 @@ Item {
         // force 5x5
 
        CheckBox {
-            font.pixelSize: 20
+            font.pixelSize: 10
             scale: 3
             text: qsTr("Force size to multiples of 5")
             id: fiveMultiple
