@@ -125,7 +125,7 @@ Item {
 
         Text {
             Layout.alignment: Qt.AlignLeft
-            text: "Min Size: 1"
+            text: "Min Size: 5"
             font.pixelSize: 28
             color: "#555555"
             font.weight: Font.Medium
@@ -139,7 +139,7 @@ Item {
             Layout.fillWidth: true
             Layout.maximumWidth = 200
             from: 5
-            value: 1
+            value: 5
             to: 200
             scale: 3
             stepSize: 5
@@ -154,8 +154,7 @@ Item {
         // force 5x5
 
        CheckBox {
-            font.pixelSize: 24
-            scale: 2
+            font.pixelSize: 28
             text: qsTr("Force size to multiples of 5")
             id: fiveMultiple
         }
