@@ -122,7 +122,7 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
         for attempt in 0..attempts {
             let id = ids[(base + attempt) % ids.len()];
             send(3, &format!("Downloading puzzle #{}...", id));
-            match nonogram::fetch_nonogram(id, req.type_bw) {
+            match nonogram::fetch_nonogram(id) {
                 Ok(p) => { result = Some(p); break; }
                 Err(e) => {
                     eprintln!(

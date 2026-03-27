@@ -75,7 +75,7 @@ fn parse_total_pages(html: &str) -> Option<usize> {
     max.or(Some(1))
 }
 
-pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std::error::Error>> {
+pub fn fetch_nonogram(id: u32) -> Result<NonogramInfo, Box<dyn std::error::Error>> {
     let print_url = format!("https://www.nonograms.org/nonogramprint/i/{}", id);
 
     eprintln!("[nonogram] fetching print page: {}", print_url);
