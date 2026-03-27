@@ -109,11 +109,12 @@ Item {
             id: maxSize
             Layout.fillWidth: true
             Layout.preferredHeight: 80
-            from: 1
+            Layout.preferredWidth: 225
+            from: 5
             value: 15
             to: 200
             stepSize: 5
-            scale: 4
+            scale: 3
             snapMode: Slider.SnapAlways
 
             onMoved: {
@@ -137,11 +138,12 @@ Item {
         Slider {
             id: minSize
             Layout.fillWidth: true
-            Layout.preferredHeight: 80 
-            from: 1
+            Layout.preferredHeight: 80
+            Layout.preferredWidth: 225
+            from: 5
             value: 1
             to: 200
-            scale: 4
+            scale: 3
             stepSize: 5
             snapMode: Slider.SnapAlways
             onMoved: {
