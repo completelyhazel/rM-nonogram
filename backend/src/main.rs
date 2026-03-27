@@ -47,8 +47,8 @@ fn main() {
                     match serde_json::from_str::<FetchRequest>(&msg.contents) {
                         Ok(req) => {
                             eprintln!(
-                                "[fetcher] fetch request: bw={} size={} difficulty={}",
-                                req.type_bw, req.size, req.difficulty
+                                "[fetcher] fetch request: bw={} max={} min={}",
+                               req.type_bw, req.max_size, req.min_size
                             );
                             if let Some(prev) = active_worker.take() {
                                 let _ = prev.join();
@@ -122,7 +122,7 @@ fn handle_fetch(tx: mpsc::Sender<(u32, String)>, req: FetchRequest) {
         for attempt in 0..attempts {
             let id = ids[(base + attempt) % ids.len()];
             send(3, &format!("Downloading puzzle #{}...", id));
-            match nonogram::fetch_nonogram(id, req.type_bw) {
+            match nonogram::fetch_nonogram(id) {
                 Ok(p) => { result = Some(p); break; }
                 Err(e) => {
                     eprintln!(
