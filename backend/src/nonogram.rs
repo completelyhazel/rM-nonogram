@@ -1,38 +1,37 @@
-use std::io::Read;
 use scraper::{Html, Selector};
 use serde::Deserialize;
+use std::io::Read;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct FetchRequest {
-    pub type_bw:    bool,
-    pub size:       String,   // "5", "10", "15", "20", "25"
-    pub difficulty: u32,      // 0=any
+    pub type_bw: bool,
+    pub min_size: u8,
+    pub max_size: u8,
+    pub five_multiple: bool,
 }
 
 pub struct NonogramInfo {
-    pub id:          u32,
-    pub title:       String,
+    pub id: u32,
+    pub title: String,
     pub image_bytes: Vec<u8>,
 }
 
+const SEARCH_URL: &str = "https://www.nonograms.org/search";
+
 pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    let base = if req.type_bw {
-        "https://www.nonograms.org/nonograms"
-    } else {
-        "https://www.nonograms.org/nonograms2"
-    };
-
-    let size_path = match req.size.as_str() {
-        "5"  => "/size/xsmall",
-        "10" => "/size/small",
-        "15" => "/size/medium",
-        "20" => "/size/large",
-        "25" => "/size/xlarge",
-        _    => "",
-    };
-
     // get page 1 to get the max page amount
-    let first_url = format!("{}{}/p/1", base, size_path);
+    let search_params = format!(
+        "?name=&colors={}&width_min={}&width_max={}&height_min={}&height_max={}{}",
+        if req.type_bw { "1" } else { "2" },
+        req.min_size,
+        req.max_size,
+        req.min_size,
+        req.max_size,
+        if req.five_multiple { "&size5=1" } else { "" }
+    );
+
+    let first_url: String = format!("{SEARCH_URL}{search_params}");
+
     eprintln!("[nonogram] fetching page 1 to count pages: {}", first_url);
     let first_body = fetch_html(&first_url)?;
 
@@ -54,7 +53,7 @@ pub fn search_nonograms(req: &FetchRequest) -> Result<Vec<u32>, Box<dyn std::err
     let body = if page == 1 {
         first_body
     } else {
-        let url = format!("{}{}/p/{}", base, size_path, page);
+        let url = format!("{}/p/{}{}", SEARCH_URL, page, search_params);
         eprintln!("[nonogram] fetching page: {}", url);
         fetch_html(&url)?
     };
@@ -76,12 +75,8 @@ fn parse_total_pages(html: &str) -> Option<usize> {
     max.or(Some(1))
 }
 
-pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std::error::Error>> {
-    let print_url = if is_bw {
-        format!("https://www.nonograms.org/nonogramprint/i/{}", id)
-    } else {
-        format!("https://www.nonograms.org/nonogramprint2/i/{}", id)
-    };
+pub fn fetch_nonogram(id: u32) -> Result<NonogramInfo, Box<dyn std::error::Error>> {
+    let print_url = format!("https://www.nonograms.org/nonogramprint/i/{}", id);
 
     eprintln!("[nonogram] fetching print page: {}", print_url);
     let html = fetch_html(&print_url)?;
@@ -89,24 +84,7 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std:
 
     let doc = Html::parse_document(&html);
 
-    // title, try h1, h2, then <title> tag (print pages are minimal HTML)
-    let title = ["h1", "h2", "h3"]
-        .iter()
-        .find_map(|sel| {
-            doc.select(&Selector::parse(sel).unwrap())
-                .next()
-                .map(|e| e.text().collect::<String>().trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .or_else(|| {
-            // Fall back to <title> tag, stripping common suffixes
-            doc.select(&Selector::parse("title").unwrap())
-                .next()
-                .map(|e| e.text().collect::<String>())
-                .map(|s| s.split('|').next().unwrap_or(&s).trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .unwrap_or_else(|| format!("Nonogram #{}", id));
+    let title: String = format!("Nonogram #{}", id);
     eprintln!("[nonogram] title: {}", title);
 
     // find da image
@@ -124,7 +102,11 @@ pub fn fetch_nonogram(id: u32, is_bw: bool) -> Result<NonogramInfo, Box<dyn std:
     let image_bytes = fetch_bytes(&img_url)?;
     eprintln!("[nonogram] image: {} bytes", image_bytes.len());
 
-    Ok(NonogramInfo { id, title, image_bytes })
+    Ok(NonogramInfo {
+        id,
+        title,
+        image_bytes,
+    })
 }
 
 fn parse_ids(html: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
@@ -137,7 +119,9 @@ fn parse_ids(html: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
             if let Some(id_str) = href.split("/i/").nth(1) {
                 let clean = id_str.split('?').next().unwrap_or("").trim();
                 if let Ok(id) = clean.parse::<u32>() {
-                    if id > 0 { ids.push(id); }
+                    if id > 0 {
+                        ids.push(id);
+                    }
                 }
             }
         }
@@ -163,7 +147,10 @@ fn build_agent() -> ureq::Agent {
 fn fetch_html(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let resp = build_agent()
         .get(url)
-        .set("User-Agent", "Mozilla/5.0 (compatible; NonogramFetcher/1.0)")
+        .set(
+            "User-Agent",
+            "Mozilla/5.0 (compatible; NonogramFetcher/1.0)",
+        )
         .set("Accept", "text/html,application/xhtml+xml")
         .call()?;
     Ok(resp.into_string()?)
@@ -172,7 +159,10 @@ fn fetch_html(url: &str) -> Result<String, Box<dyn std::error::Error>> {
 fn fetch_bytes(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let resp = build_agent()
         .get(url)
-        .set("User-Agent", "Mozilla/5.0 (compatible; NonogramFetcher/1.0)")
+        .set(
+            "User-Agent",
+            "Mozilla/5.0 (compatible; NonogramFetcher/1.0)",
+        )
         .call()?;
     let mut bytes = Vec::new();
     resp.into_reader().read_to_end(&mut bytes)?;

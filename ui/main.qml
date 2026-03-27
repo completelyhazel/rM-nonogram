@@ -96,47 +96,71 @@ Item {
         // grid size
         Text {
             Layout.alignment: Qt.AlignLeft
-            text: "Grid Size"
+            text: "Max Size: 15"
             font.pixelSize: 28
             color: "#555555"
             font.weight: Font.Medium
+            id: maxText
         }
 
         Item { height: 16 }
 
-        OptionRow {
-            id: sizeSelector
-            model: ["Tiny", "Small", "Medium", "Large", "Huge"]
-            selected: 0
+        Slider {
+            id: maxSize
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignHCenter
+            Layout.maximumWidth: 300
+            from: 5
+            value: 15
+            to: 200
+            stepSize: 5
+            scale: 3
+            snapMode: Slider.SnapAlways
+
+            onMoved: {
+               maxText.text = "Max Size: " + maxSize.value
+            }
         }
 
-        Item { height: 4 }
+        Item { height: 16 }
 
         Text {
-            Layout.alignment: Qt.AlignHCenter
-            text: "\"Tiny\" recommended"
-            font.pixelSize: 26
-            color: "#6e6e6e"
+            Layout.alignment: Qt.AlignLeft
+            text: "Min Size: 5"
+            font.pixelSize: 28
+            color: "#555555"
+            font.weight: Font.Medium
+            id: minText
         }
 
+        Item { height: 16 }
+
+        Slider {
+            id: minSize
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignHCenter
+            Layout.maximumWidth: 300
+            from: 5
+            value: 5
+            to: 200
+            scale: 3
+            stepSize: 5
+            snapMode: Slider.SnapAlways
+            onMoved: {
+                minText.text = "Min Size: " + minSize.value
+            }
+        }
 
         Item { height: 40 }
 
-        // difficulty
-        Text {
-            Layout.alignment: Qt.AlignLeft
-            text: "Difficulty"
-            font.pixelSize: 28
-            color: "#555555"
-            font.weight: Font.Medium
-        }
+        // force 5x5
 
-        Item { height: 16 }
-
-        OptionRow {
-            id: diffSelector
-            model: ["Any", "Easy", "Medium", "Hard"]
-            selected: 0
+       CheckBox {
+            font.pixelSize: 10
+            scale: 3
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("Restrict size to multiples of 5")
+            id: fiveMultiple
         }
 
         Item { height: 70 }
@@ -169,15 +193,15 @@ Item {
                 anchors.fill: parent
                 enabled: fetchButton.enabled
                 onClicked: {
-                    var sizeMap = ["5", "10", "15", "20", "25"]
                     var payload = JSON.stringify({
-                        type_bw:    typeSelector.selected === 0,
-                        size:       sizeMap[sizeSelector.selected],
-                        difficulty: diffSelector.selected
+                        type_bw: typeSelector.selected === 0,
+                        min_size: minSize.value,
+                        max_size: maxSize.value,
+                        five_multiple: fiveMultiple.checkState === Qt.Checked
                     })
                     fetchButton.enabled = false
-                    statusText.color    = "#555555"
-                    statusText.text     = "Connecting to nonograms.org…"
+                    statusText.color = "#555555"
+                    statusText.text = "Connecting to nonograms.org…"
                     endpoint.sendMessage(0, payload)
                 }
             }
