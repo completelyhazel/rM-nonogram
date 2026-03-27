@@ -96,10 +96,11 @@ Item {
         // grid size
         Text {
             Layout.alignment: Qt.AlignLeft
-            text: "Max Size"
+            text: "Max Size: 15"
             font.pixelSize: 28
             color: "#555555"
             font.weight: Font.Medium
+            id: maxText
         }
 
         Item { height: 16 }
@@ -109,16 +110,22 @@ Item {
             value: 15
             to: 200
             stepSize: 5
+            scale: 2.5
             snapMode: Slider.SnapAlways
             id: maxSize
+
+            moved: {
+                minText.text = "Max Size: " + maxSize.value
+            }
         }
 
         Text {
             Layout.alignment: Qt.AlignLeft
-            text: "Min Size"
+            text: "Min Size: 1"
             font.pixelSize: 28
             color: "#555555"
             font.weight: Font.Medium
+            id: minText
         }
 
         Item { height: 16 }
@@ -127,14 +134,18 @@ Item {
             from: 1
             value: 15
             to: 200
+            scale: 2.5
             stepSize: 1
             snapMode: Slider.SnapAlways
             id: minSize
+            moved: {
+                minText.text = "Min Size: " + minSize.value
+            }
         }
 
         Item { height: 40 }
 
-        // Force 5x5
+        // force 5x5
         Text {
             Layout.alignment: Qt.AlignLeft
             text: "Width/height multiple of 5"
@@ -146,8 +157,8 @@ Item {
         Item { height: 16 }
 
        CheckBox {
-            font.pixelSize: 24
-            text: qsTr("5-multiple size")
+            font.pixelSize: 30
+            text: qsTr("Force size to multiples of 5")
             id: fiveMultiple
         }
 
@@ -182,14 +193,14 @@ Item {
                 enabled: fetchButton.enabled
                 onClicked: {
                     var payload = JSON.stringify({
-                        type_bw:    typeSelector.selected === 0,
-                        min_size:   minSize.value,
-                        max_size:   maxSize.value,
+                        type_bw: typeSelector.selected === 0,
+                        min_size: minSize.value,
+                        max_size: maxSize.value,
                         five_multiple: fiveMultiple.checkState === Qt.Checked
                     })
                     fetchButton.enabled = false
-                    statusText.color    = "#555555"
-                    statusText.text     = "Connecting to nonograms.org…"
+                    statusText.color = "#555555"
+                    statusText.text = "Connecting to nonograms.org…"
                     endpoint.sendMessage(0, payload)
                 }
             }
