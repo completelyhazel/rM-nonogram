@@ -20,7 +20,6 @@ pub fn generate_pdf(
     output_dir: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
 
-    // ── Decode image dimensions ───────────────────────────────────────────────
     let (img_w_px, img_h_px) = {
         use ::image::ImageDecoder;
         let dec = PngDecoder::new(std::io::Cursor::new(&info.image_bytes))?;
@@ -28,7 +27,6 @@ pub fn generate_pdf(
     };
     eprintln!("[pdf] image {}x{} px", img_w_px, img_h_px);
 
-    // ── Scale the image to fill the available area (preserve aspect ratio) ────
     let avail_w = PAGE_W - 2.0 * MARGIN;
     let avail_h = PAGE_H - 2.0 * MARGIN - HEADER_H - FOOTER_H;
 
@@ -40,7 +38,6 @@ pub fn generate_pdf(
     let img_x = MARGIN + (avail_w - draw_w) / 2.0;
     let img_y = PAGE_H - MARGIN - HEADER_H - draw_h;
 
-    // ── Build the PDF ─────────────────────────────────────────────────────────
     let (doc, page1, layer1) = PdfDocument::new(
         &info.title,
         Mm(PAGE_W),
@@ -89,7 +86,6 @@ pub fn generate_pdf(
         &font_reg,
     );
 
-    // ── Write files to disk ───────────────────────────────────────────────────
     let uuid = gen_uuid();
     let base  = PathBuf::from(output_dir);
     fs::create_dir_all(&base)?;
@@ -118,20 +114,9 @@ pub fn generate_pdf(
 
     eprintln!("[pdf] saved {}.pdf", uuid);
 
-    // NOTE: Do NOT send SIGHUP to xochitl here.
-    // On reMarkable Paper Pro firmware (imx8mm), SIGHUP terminates xochitl
-    // entirely instead of triggering a library reload, which kills the AppLoad
-    // session and freezes the UI mid-use.
-    // The new document will appear in the library on the next normal xochitl
-    // startup (e.g. after the user exits AppLoad).
-    eprintln!("[pdf] skipping xochitl notify (SIGHUP kills xochitl on this firmware)");
-
     Ok(pdf_path.to_string_lossy().to_string())
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Current Unix time in milliseconds (for xochitl metadata timestamps).
 fn now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -139,8 +124,6 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
-/// Generate a v4-ish UUID from the current nanosecond timestamp.
-/// Not cryptographically random, but unique enough for a document filename.
 fn gen_uuid() -> String {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
