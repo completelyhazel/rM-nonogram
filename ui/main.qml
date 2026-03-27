@@ -108,7 +108,7 @@ Item {
         Slider {
             id: maxSize
             Layout.fillWidth: true
-            Layout.maximumWidth = 200
+            Layout.maximumWidth: 225
             from: 5
             value: 15
             to: 200
@@ -137,7 +137,7 @@ Item {
         Slider {
             id: minSize
             Layout.fillWidth: true
-            Layout.maximumWidth = 200
+            Layout.maximumWidth: 225
             from: 5
             value: 5
             to: 200
