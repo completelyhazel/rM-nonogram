@@ -114,7 +114,7 @@ Item {
             snapMode: Slider.SnapAlways
             id: maxSize
 
-            moved: {
+            onMoved: {
                 minText.text = "Max Size: " + maxSize.value
             }
         }
@@ -138,7 +138,7 @@ Item {
             stepSize: 1
             snapMode: Slider.SnapAlways
             id: minSize
-            moved: {
+            onMoved: {
                 minText.text = "Min Size: " + minSize.value
             }
         }
