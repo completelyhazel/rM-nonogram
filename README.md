@@ -17,3 +17,5 @@ Nonograms (also known as Picross) are logic-based picture puzzles with an empty 
 ## Installation
 
 [click here](https://github.com/completelyhazel/rM-nonogram/releases/latest) to download the latest release :3
+
+if you wish to uninstall this app, simply delete `/home/root/xovi/exthome/appload/nonogram-fetcher`.
