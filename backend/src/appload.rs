@@ -10,9 +10,9 @@ use libc::{
 use serde::Deserialize;
 
 pub struct AppLoadConnection {
-    fd:     i32,
+    fd: i32,
     stream: Option<UnixStream>,
-    mode:   SocketMode,
+    mode: SocketMode,
 }
 
 #[derive(Clone, Copy)]

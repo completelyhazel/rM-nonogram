@@ -1,6 +1,3 @@
-// PDF generation: embed the nonogram print-page image into an A4 PDF,
-// write xochitl sidecar files (.metadata, .content, .thumbnails/),
-// and signal xochitl to rescan its library.
 
 use printpdf::*;
 use ::image::codecs::png::PngDecoder;
@@ -9,9 +6,9 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 use crate::nonogram::NonogramInfo;
 
-const PAGE_W:   f64 = 210.0; // A4 width  (mm)
-const PAGE_H:   f64 = 297.0; // A4 height (mm)
-const MARGIN:   f64 = 12.0;
+const PAGE_W: f64 = 210.0; // A4 width  (mm)
+const PAGE_H: f64 = 297.0; // A4 height (mm)
+const MARGIN: f64 = 12.0;
 const HEADER_H: f64 = 14.0;  // reserved above the image for the title
 const FOOTER_H: f64 = 10.0;  // reserved below the image for the puzzle ID
 
@@ -30,7 +27,7 @@ pub fn generate_pdf(
     let avail_w = PAGE_W - 2.0 * MARGIN;
     let avail_h = PAGE_H - 2.0 * MARGIN - HEADER_H - FOOTER_H;
 
-    let scale  = (avail_w / img_w_px as f64).min(avail_h / img_h_px as f64);
+    let scale = (avail_w / img_w_px as f64).min(avail_h / img_h_px as f64);
     let draw_w = img_w_px as f64 * scale;
     let draw_h = img_h_px as f64 * scale;
 
@@ -44,8 +41,8 @@ pub fn generate_pdf(
         Mm(PAGE_H),
         "Layer 1",
     );
-    let layer    = doc.get_page(page1).get_layer(layer1);
-    let font     = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
+    let layer = doc.get_page(page1).get_layer(layer1);
+    let font = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
     let font_reg = doc.add_builtin_font(BuiltinFont::Helvetica)?;
 
     // Title header
@@ -58,7 +55,7 @@ pub fn generate_pdf(
     );
 
     // Compute the printpdf scale factors from a reference DPI of 96.
-    let dpi          = 96.0_f64;
+    let dpi = 96.0_f64;
     let natural_w_mm = img_w_px as f64 / dpi * 25.4;
     let natural_h_mm = img_h_px as f64 / dpi * 25.4;
     let sx = draw_w / natural_w_mm;
@@ -70,9 +67,9 @@ pub fn generate_pdf(
     pdf_image.add_to_layer(layer.clone(), ImageTransform {
         translate_x: Some(Mm(img_x)),
         translate_y: Some(Mm(img_y)),
-        scale_x:     Some(sx),
-        scale_y:     Some(sy),
-        dpi:         Some(dpi),
+        scale_x: Some(sx),
+        scale_y: Some(sy),
+        dpi: Some(dpi),
         ..Default::default()
     });
 
@@ -87,7 +84,7 @@ pub fn generate_pdf(
     );
 
     let uuid = gen_uuid();
-    let base  = PathBuf::from(output_dir);
+    let base = PathBuf::from(output_dir);
     fs::create_dir_all(&base)?;
 
     // Main PDF file
@@ -95,7 +92,7 @@ pub fn generate_pdf(
     doc.save(&mut BufWriter::new(fs::File::create(&pdf_path)?))?;
 
     // .metadata — required by xochitl to index the document
-    let ts           = now_ms();
+    let ts = now_ms();
     let visible_name = info.title.replace('"', "\\\"");
     let metadata = format!(
         r#"{{"deleted":false,"lastModified":"{ts}","lastOpened":"","lastOpenedPage":0,"metadatamodified":false,"modified":false,"parent":"","pinned":false,"synced":false,"type":"DocumentType","version":1,"visibleName":"{visible_name}"}}"#
